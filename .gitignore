@@ -1,0 +1,5 @@
+/data/
+/surge-geo-server
+*.list
+*.dat
+.DS_Store

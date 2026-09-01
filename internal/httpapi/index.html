@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Surge Geo Server</title>
+  <style>
+    :root { color-scheme: light dark; --accent:#4f7cff; --panel:color-mix(in srgb, Canvas 94%, var(--accent) 6%); --border:color-mix(in srgb, CanvasText 15%, transparent); }
+    * { box-sizing:border-box; }
+    body { margin:0; font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif; background:Canvas; color:CanvasText; }
+    main { width:min(920px,calc(100% - 32px)); margin:48px auto; }
+    h1 { font-size:clamp(30px,5vw,48px); margin:0 0 8px; letter-spacing:-.04em; }
+    .lead { opacity:.68; margin:0 0 32px; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    .card { padding:20px; border:1px solid var(--border); border-radius:16px; background:var(--panel); }
+    h2 { font-size:17px; margin:0 0 12px; }
+    form { display:flex; gap:8px; }
+    input { min-width:0; flex:1; padding:11px 12px; border:1px solid var(--border); border-radius:10px; background:Canvas; color:CanvasText; }
+    button { padding:11px 16px; border:0; border-radius:10px; background:var(--accent); color:white; font-weight:650; cursor:pointer; }
+    pre { min-height:110px; margin:14px 0 0; padding:13px; overflow:auto; border-radius:10px; background:color-mix(in srgb, CanvasText 7%, Canvas); white-space:pre-wrap; word-break:break-word; }
+    .links { margin-top:16px; }
+    code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    @media (max-width:700px) { main{margin-top:28px}.grid{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Surge Geo Server</h1>
+  <p class="lead">按需生成 Surge 规则，并查询域名或 IP 匹配了哪些规则集。</p>
+  <section class="grid">
+    <article class="card">
+      <h2>域名归属查询</h2>
+      <form data-kind="domain"><input name="value" placeholder="api.openai.com" autocomplete="off"><button>查询</button></form>
+      <pre>等待输入…</pre>
+    </article>
+    <article class="card">
+      <h2>IP 归属查询</h2>
+      <form data-kind="ip"><input name="value" placeholder="8.8.8.8" autocomplete="off"><button>查询</button></form>
+      <pre>等待输入…</pre>
+    </article>
+  </section>
+  <section class="card links">
+    <h2>规则地址</h2>
+    <div><code>/geosite/openai</code>　<code>/geosite/google@cn</code>　<code>/geoip/cn</code></div>
+  </section>
+</main>
+<script>
+for (const form of document.querySelectorAll('form')) {
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const output = form.nextElementSibling;
+    const value = new FormData(form).get('value').trim();
+    if (!value) return;
+    output.textContent = '查询中…';
+    try {
+      const response = await fetch(`/api/lookup/${form.dataset.kind}?value=${encodeURIComponent(value)}`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      output.textContent = data.matches.length ? data.matches.map(item => {
+        const rule = item.value ? `${item.kind}: ${item.value}` : item.cidr;
+        const attrs = item.attributes?.length ? ` @${item.attributes.join(' @')}` : '';
+        return `${item.rule_set}\n  ${rule}${attrs}`;
+      }).join('\n\n') : '没有匹配的规则集';
+    } catch (error) { output.textContent = `错误：${error.message}`; }
+  });
+}
+</script>
+</body>
+</html>

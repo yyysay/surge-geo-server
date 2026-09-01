@@ -1,0 +1,14 @@
+services:
+  surge-geo-server:
+    build: .
+    container_name: surge-geo-server
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - surge-geo-data:/data
+    environment:
+      REFRESH_INTERVAL: 6h
+    restart: unless-stopped
+
+volumes:
+  surge-geo-data:

@@ -1,0 +1,7 @@
+.git
+.github
+data
+surge-geo-server
+*.dat
+*.list
+README.md
