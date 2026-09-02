@@ -3,140 +3,310 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Surge Geo Server</title>
+  <title>Surge Geo</title>
   <style>
-    :root { color-scheme: light dark; --accent:#4f7cff; --panel:color-mix(in srgb, Canvas 94%, var(--accent) 6%); --border:color-mix(in srgb, CanvasText 15%, transparent); }
+    :root {
+      color-scheme:light dark;
+      --bg:#fbfbfa; --surface:#fff; --text:#17201b; --muted:#707873;
+      --line:#e3e7e4; --accent:#287a52; --danger:#b33b36;
+      --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    }
+    @media (prefers-color-scheme:dark) {
+      :root { --bg:#101311; --surface:#151917; --text:#edf2ee; --muted:#99a19c; --line:#29302c; --accent:#65c792; --danger:#ff8d87; }
+    }
     * { box-sizing:border-box; }
-    body { margin:0; font:15px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif; background:Canvas; color:CanvasText; }
-    main { width:min(920px,calc(100% - 32px)); margin:48px auto; }
-    h1 { font-size:clamp(30px,5vw,48px); margin:0 0 8px; letter-spacing:-.04em; }
-    .lead { opacity:.68; margin:0 0 32px; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-    .card { padding:20px; border:1px solid var(--border); border-radius:16px; background:var(--panel); }
-    h2 { font-size:17px; margin:0 0 12px; }
-    form { display:flex; gap:8px; }
-    input { min-width:0; flex:1; padding:11px 12px; border:1px solid var(--border); border-radius:10px; background:Canvas; color:CanvasText; }
-    button { padding:11px 16px; border:0; border-radius:10px; background:var(--accent); color:white; font-weight:650; cursor:pointer; }
-    pre { min-height:110px; margin:14px 0 0; padding:13px; overflow:auto; border-radius:10px; background:color-mix(in srgb, CanvasText 7%, Canvas); white-space:pre-wrap; word-break:break-word; }
-    .links, .sources { margin-top:16px; }
-    .sources form { display:grid; gap:12px; }
-    .field { display:grid; gap:6px; }
-    .field span { font-size:13px; opacity:.72; }
-    .hint { margin:0 0 14px; opacity:.68; }
-    .actions { display:flex; align-items:center; gap:10px; }
-    .actions small { opacity:.65; }
-    code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
-    @media (max-width:700px) { main{margin-top:28px}.grid{grid-template-columns:1fr} }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif; }
+    button,input,select,textarea { font:inherit; }
+    button { cursor:pointer; }
+    .shell { width:min(760px,calc(100% - 32px)); margin:0 auto; }
+    header { display:flex; align-items:center; justify-content:space-between; padding:32px 0 22px; border-bottom:1px solid var(--line); }
+    h1 { margin:0; font-size:26px; line-height:1; letter-spacing:-.04em; }
+    h2 { margin:0; font-size:15px; }
+    .status,.meta { color:var(--muted); font-size:12px; }
+    section,details.config { padding:24px 0; border-bottom:1px solid var(--line); }
+    .head { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:12px; }
+    form.query { display:flex; gap:8px; }
+    input,select,textarea { min-width:0; color:var(--text); background:var(--surface); border:1px solid var(--line); border-radius:8px; outline:none; }
+    input:focus,select:focus,textarea:focus { border-color:var(--accent); }
+    input,select { padding:10px 11px; }
+    form.query input { flex:1; padding:12px 13px; font-size:15px; }
+    button { padding:9px 14px; border-radius:8px; font-weight:650; }
+    .primary { border:1px solid var(--accent); background:var(--accent); color:var(--bg); }
+    .secondary { border:1px solid var(--line); background:var(--surface); color:var(--text); }
+    button:disabled { cursor:wait; opacity:.55; }
+    textarea { display:block; width:100%; min-height:280px; padding:13px 14px; resize:vertical; font:13px/1.65 var(--mono); tab-size:2; }
+    textarea.output { min-height:120px; margin-top:10px; }
+    .status { display:block; min-height:18px; margin-top:8px; }
+    .status.bad,.error { color:var(--danger); }
+    .result { display:none; padding-top:15px; }
+    .result.visible { display:block; }
+    .outcome { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+    .policy { font-size:22px; letter-spacing:-.025em; }
+    .result details { margin-top:11px; color:var(--muted); }
+    .result summary { cursor:pointer; }
+    .trace { margin-top:7px; border-top:1px solid var(--line); }
+    .trace-row { display:grid; grid-template-columns:1fr auto; gap:8px; padding:7px 0; border-bottom:1px solid var(--line); font:12px/1.45 var(--mono); }
+    .trace-row.skip { opacity:.48; }
+    .trace-row.hit .state { color:var(--accent); }
+    .state { font-family:ui-sans-serif,system-ui,sans-serif; }
+    .geo-list { max-height:190px; overflow:auto; margin:7px 0 0; padding:0; list-style:none; border-top:1px solid var(--line); font:12px/1.45 var(--mono); }
+    .geo-list li { padding:6px 0; border-bottom:1px solid var(--line); }
+    details.config { padding:0; }
+    details.config > summary { display:flex; align-items:center; justify-content:space-between; padding:20px 0; cursor:pointer; list-style:none; font-weight:650; }
+    details.config > summary::-webkit-details-marker { display:none; }
+    details.config > summary::after { content:"＋"; color:var(--muted); font-weight:400; }
+    details.config[open] > summary::after { content:"−"; }
+    .config-body { padding:0 0 24px; }
+    .config-grid { display:grid; grid-template-columns:1fr 1fr; gap:11px; }
+    label { display:grid; gap:5px; color:var(--muted); font-size:12px; }
+    label input,label select { width:100%; color:var(--text); }
+    .wide { grid-column:1/-1; }
+    .actions { display:flex; gap:8px; margin-top:8px; }
+    @media (max-width:600px) {
+      .shell { width:calc(100% - 24px); }
+      header { padding-top:24px; }
+      .config-grid { grid-template-columns:1fr; }
+      .wide { grid-column:auto; }
+    }
   </style>
 </head>
 <body>
-<main>
-  <h1>Surge Geo Server</h1>
-  <p class="lead">按需生成 Surge 规则，并查询域名或 IP 匹配了哪些规则集。</p>
-  <section class="grid">
-    <article class="card">
-      <h2>域名归属查询</h2>
-      <form data-kind="domain"><input name="value" placeholder="api.openai.com" autocomplete="off"><button>查询</button></form>
-      <pre>等待输入…</pre>
-    </article>
-    <article class="card">
-      <h2>IP 归属查询</h2>
-      <form data-kind="ip"><input name="value" placeholder="8.8.8.8" autocomplete="off"><button>查询</button></form>
-      <pre>等待输入…</pre>
-    </article>
-  </section>
-  <section class="card links">
-    <h2>规则地址</h2>
-    <div><code>/geosite/openai</code>　<code>/geosite/google@cn</code>　<code>/geoip/cn</code></div>
-  </section>
-  <section class="card sources">
-    <h2>数据源配置</h2>
-    <p class="hint">默认显示服务当前使用的数据源。修改后可生成对应的启动参数和 Docker 环境变量；为避免公开服务产生 SSRF 风险，本页面不会直接热切换服务器数据源。</p>
-    <form id="source-form">
-      <label class="field">
-        <span>Geosite DAT 地址</span>
-        <input name="geosite_url" type="url" required placeholder="https://example.com/geosite.dat" autocomplete="url">
-      </label>
-      <label class="field">
-        <span>GeoIP DAT 地址</span>
-        <input name="geoip_url" type="url" required placeholder="https://example.com/geoip.dat" autocomplete="url">
-      </label>
-      <div class="actions">
-        <button type="submit">生成配置</button>
-        <small>修改后重启服务生效</small>
-      </div>
-    </form>
-    <pre id="source-output">正在读取当前数据源…</pre>
-  </section>
-</main>
-<script>
-for (const form of document.querySelectorAll('form[data-kind]')) {
-  form.addEventListener('submit', async event => {
-    event.preventDefault();
-    const output = form.nextElementSibling;
-    const value = new FormData(form).get('value').trim();
-    if (!value) return;
-    output.textContent = '查询中…';
-    try {
-      const response = await fetch(`/api/lookup/${form.dataset.kind}?value=${encodeURIComponent(value)}`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-      output.textContent = data.matches.length ? data.matches.map(item => {
-        const rule = item.value ? `${item.kind}: ${item.value}` : item.cidr;
-        const attrs = item.attributes?.length ? ` @${item.attributes.join(' @')}` : '';
-        return `${item.rule_set}\n  ${rule}${attrs}`;
-      }).join('\n\n') : '没有匹配的规则集';
-    } catch (error) { output.textContent = `错误：${error.message}`; }
-  });
-}
+  <div class="shell">
+    <header>
+      <h1>Surge Geo</h1>
+    </header>
 
-const sourceForm = document.querySelector('#source-form');
-const sourceOutput = document.querySelector('#source-output');
+    <main>
+      <section>
+        <div class="head"><h2>查询</h2></div>
+        <form id="query-form" class="query">
+          <input name="value" placeholder="域名或 IP" autocomplete="off" autofocus>
+          <button class="primary">查询</button>
+        </form>
+        <div id="query-result" class="result" aria-live="polite"></div>
+      </section>
 
-function validHTTPURL(value) {
-  try {
-    const url = new URL(value);
-    return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password;
-  } catch { return false; }
-}
+      <section>
+        <div class="head">
+          <h2>规则</h2>
+          <button id="export-rules" class="primary" type="button">生成 Surge 配置</button>
+        </div>
+        <textarea id="rules" spellcheck="false" aria-label="规则"></textarea>
+        <span id="save-status" class="status">—</span>
+        <div id="export-panel" hidden>
+          <textarea id="surge-output" class="output" aria-label="Surge 配置" readonly></textarea>
+          <div class="actions">
+            <button id="copy-rules" class="secondary" type="button">复制</button>
+          </div>
+        </div>
+      </section>
 
-function shellQuote(value) {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
+      <details class="config">
+        <summary>配置</summary>
+        <div class="config-body">
+          <form id="config-form" class="config-grid">
+            <label class="wide">Geosite<input name="geosite_url" type="url" required></label>
+            <label class="wide">GeoIP<input name="geoip_url" type="url" required></label>
+            <label>Regex<select name="regex_mode"><option value="strict">strict</option><option value="balanced">balanced</option></select></label>
+            <label>Token<input name="admin_token" type="password" autocomplete="off"></label>
+            <div class="wide">
+              <button class="secondary" type="submit">应用配置</button>
+              <span id="config-status" class="status"></span>
+            </div>
+          </form>
+        </div>
+      </details>
+    </main>
+  </div>
 
-function renderSourceConfig() {
-  const data = new FormData(sourceForm);
-  const geosite = data.get('geosite_url').trim();
-  const geoip = data.get('geoip_url').trim();
-  if (!validHTTPURL(geosite) || !validHTTPURL(geoip)) {
-    sourceOutput.textContent = '请输入不包含账号密码的 HTTP 或 HTTPS 地址。';
-    return;
-  }
-  sourceOutput.textContent = `命令行参数：
--geosite-url ${shellQuote(geosite)} \\
-  -geoip-url ${shellQuote(geoip)}
+  <script>
+    const queryForm = document.querySelector('#query-form');
+    const queryResult = document.querySelector('#query-result');
+    const rulesEditor = document.querySelector('#rules');
+    const exportRulesButton = document.querySelector('#export-rules');
+    const exportPanel = document.querySelector('#export-panel');
+    const surgeOutput = document.querySelector('#surge-output');
+    const copyRulesButton = document.querySelector('#copy-rules');
+    const saveStatus = document.querySelector('#save-status');
+    const configForm = document.querySelector('#config-form');
+    const configStatus = document.querySelector('#config-status');
+    const kindLabels = {suffix:'domain',full:'full',keyword:'keyword',regex:'regexp'};
+    const localRulesKey = 'surge-geo-rules-v1';
+    const defaultRules = 'GEOSITE,google,手动选择\nGEOIP,CN,DIRECT,no-resolve';
+    let configLoaded = false;
 
-Docker Compose 环境变量：
-GEOSITE_URL=${geosite}
-GEOIP_URL=${geoip}`;
-}
+    function node(tag, className, text) {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      if (text !== undefined) element.textContent = text;
+      return element;
+    }
+    function ruleText(rule) {
+      const parts = [rule.type];
+      if (rule.value) parts.push(rule.value);
+      parts.push(rule.policy);
+      if (rule.options) parts.push(...rule.options);
+      return parts.join(',');
+    }
+    function showError(container, error) {
+      container.className = 'result visible error';
+      container.textContent = error.message;
+    }
 
-sourceForm.addEventListener('submit', event => {
-  event.preventDefault();
-  renderSourceConfig();
-});
+    queryForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      const value = new FormData(queryForm).get('value').trim();
+      if (!value) return;
+      const button = queryForm.querySelector('button');
+      button.disabled = true;
+      queryResult.className = 'result visible';
+      queryResult.textContent = '…';
+      try {
+        const response = await fetch('/query', {
+          method:'POST',
+          headers:{'Content-Type':'application/x-www-form-urlencoded'},
+          body:new URLSearchParams({value,rules:rulesEditor.value})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        renderDecision(data);
+      } catch (error) { showError(queryResult,error); }
+      finally { button.disabled = false; }
+    });
 
-fetch('/api/config')
-  .then(response => {
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response.json();
-  })
-  .then(config => {
-    sourceForm.elements.geosite_url.value = config.geosite_url;
-    sourceForm.elements.geoip_url.value = config.geoip_url;
-    renderSourceConfig();
-  })
-  .catch(error => { sourceOutput.textContent = `读取数据源失败：${error.message}`; });
-</script>
+    function renderDecision(data) {
+      queryResult.className = 'result visible';
+      queryResult.replaceChildren();
+      const outcome = node('div','outcome');
+      outcome.append(node('strong','policy',data.policy || '无匹配'));
+      queryResult.append(outcome);
+
+      const traceDetails = node('details');
+      traceDetails.append(node('summary','',`规则匹配 (${(data.trace || []).length})`));
+      const trace = node('div','trace');
+      for (const item of data.trace || []) {
+        const row = node('div',`trace-row${item.matched ? ' hit' : item.applicable ? '' : ' skip'}`);
+        row.append(node('span','',ruleText(item.rule)));
+        row.append(node('span','state',item.matched ? '命中' : item.applicable ? '未命中' : '跳过'));
+        trace.append(row);
+      }
+      traceDetails.append(trace);
+      queryResult.append(traceDetails);
+
+      const matches = data.geo_matches || [];
+      const geoDetails = node('details');
+      geoDetails.append(node('summary','',`归属 (${matches.length})`));
+      const list = node('ul','geo-list');
+      for (const match of matches) {
+        const attrs = match.attributes?.length ? ` @${match.attributes.join(' @')}` : '';
+        const detail = match.cidr || `${kindLabels[match.kind] || match.kind}:${match.value}${attrs}`;
+        list.append(node('li','',`${match.rule_set} · ${detail}`));
+      }
+      geoDetails.append(list);
+      queryResult.append(geoDetails);
+    }
+
+    function payloadFromUI() {
+      return {
+        geosite_url:configForm.elements.geosite_url.value.trim(),
+        geoip_url:configForm.elements.geoip_url.value.trim(),
+        regex_mode:configForm.elements.regex_mode.value
+      };
+    }
+    async function applyConfig(trigger) {
+      if (!configLoaded) return;
+      trigger.disabled = true;
+      configStatus.className = 'status';
+      configStatus.textContent = '校验中…';
+      const headers = {'Content-Type':'application/json'};
+      const token = configForm.elements.admin_token.value;
+      if (token) headers.Authorization = `Bearer ${token}`;
+      try {
+        const response = await fetch('/api/config',{method:'PUT',headers,body:JSON.stringify(payloadFromUI())});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+        configStatus.textContent = '已应用';
+      } catch (error) {
+        configStatus.className = 'status bad';
+        configStatus.textContent = error.message;
+      } finally { trigger.disabled = false; }
+    }
+
+    function localRuleLines() {
+      return rulesEditor.value.split(/\r?\n/).filter(line => {
+        const value = line.trim();
+        return value && !value.startsWith('#') && !value.startsWith(';') && !value.startsWith('//');
+      });
+    }
+    function saveLocalRules() {
+      try { localStorage.setItem(localRulesKey,rulesEditor.value); } catch {}
+      saveStatus.className = 'status';
+      saveStatus.textContent = `${localRuleLines().length} 条 · 本地`;
+      exportPanel.hidden = true;
+    }
+    function parseCSVLine(line) {
+      const fields = []; let field = '', quoted = false;
+      for (let index = 0; index < line.length; index++) {
+        const char = line[index];
+        if (char === '"') {
+          if (quoted && line[index + 1] === '"') { field += '"'; index++; }
+          else quoted = !quoted;
+        } else if (char === ',' && !quoted) { fields.push(field.trim()); field = ''; }
+        else field += char;
+      }
+      if (quoted) throw new Error('引号未闭合');
+      fields.push(field.trim());
+      return fields;
+    }
+    function surgeRules() {
+      const output = [];
+      for (const [index,raw] of rulesEditor.value.split(/\r?\n/).entries()) {
+        let line = raw.trim();
+        if (!line || line.startsWith('#') || line.startsWith(';') || line.startsWith('//')) continue;
+        if (line.startsWith('- ')) line = line.slice(2).trim();
+        let fields;
+        try { fields = parseCSVLine(line); }
+        catch (error) { throw new Error(`第 ${index + 1} 行：${error.message}`); }
+        const type = (fields[0] || '').toUpperCase();
+        if (type !== 'GEOSITE' && type !== 'GEOIP') throw new Error(`第 ${index + 1} 行：只支持 GEOSITE 和 GEOIP`);
+        if (!fields[1] || !fields[2]) throw new Error(`第 ${index + 1} 行：缺少集合名或策略`);
+        const path = type === 'GEOSITE' ? 'geosite' : 'geoip';
+        const url = new URL(`/${path}/${encodeURIComponent(fields[1].toLowerCase())}`,location.origin).href;
+        const options = fields.slice(3).filter(Boolean);
+        if (type === 'GEOIP' && !options.some(value => value.toLowerCase() === 'no-resolve')) options.push('no-resolve');
+        output.push(['RULE-SET',url,fields[2],...options].join(','));
+      }
+      if (!output.length) throw new Error('没有可生成的规则');
+      return output.join('\n');
+    }
+
+    rulesEditor.addEventListener('input',saveLocalRules);
+    exportRulesButton.addEventListener('click',() => {
+      try {
+        surgeOutput.value = surgeRules();
+        exportPanel.hidden = false;
+        saveStatus.className = 'status';
+        saveStatus.textContent = `${localRuleLines().length} 条 · 本地`;
+      } catch (error) { saveStatus.className = 'status bad'; saveStatus.textContent = error.message; }
+    });
+    copyRulesButton.addEventListener('click',async () => {
+      try { await navigator.clipboard.writeText(surgeOutput.value); copyRulesButton.textContent = '已复制'; }
+      catch { surgeOutput.select(); document.execCommand('copy'); copyRulesButton.textContent = '已复制'; }
+    });
+    try { rulesEditor.value = localStorage.getItem(localRulesKey) || defaultRules; }
+    catch { rulesEditor.value = defaultRules; }
+    saveLocalRules();
+    configForm.addEventListener('submit',event => { event.preventDefault(); applyConfig(configForm.querySelector('button')); });
+
+    fetch('/api/config',{cache:'no-store'})
+      .then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); })
+      .then(config => {
+        configLoaded = true;
+        configForm.elements.geosite_url.value = config.geosite_url;
+        configForm.elements.geoip_url.value = config.geoip_url;
+        configForm.elements.regex_mode.value = config.regex_mode;
+      })
+      .catch(error => { configStatus.className = 'status bad'; configStatus.textContent = error.message; });
+  </script>
 </body>
 </html>

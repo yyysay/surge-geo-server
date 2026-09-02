@@ -29,6 +29,19 @@ func NewFetcher() *Fetcher {
 	return &Fetcher{client: &http.Client{Timeout: 2 * time.Minute}}
 }
 
+// CacheAvailable reports whether destination and its metadata belong to sourceURL.
+func CacheAvailable(sourceURL, destination string) bool {
+	if _, err := os.Stat(destination); err != nil {
+		return false
+	}
+	raw, err := os.ReadFile(destination + ".meta.json")
+	if err != nil {
+		return false
+	}
+	var cached metadata
+	return json.Unmarshal(raw, &cached) == nil && cached.URL == sourceURL
+}
+
 func (f *Fetcher) Sync(ctx context.Context, url, destination string) (bool, error) {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return false, err

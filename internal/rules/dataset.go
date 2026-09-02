@@ -33,23 +33,33 @@ type Status struct {
 	GeoIPHash   string    `json:"geoip_hash"`
 }
 
+type RegexReport struct {
+	Exact    int
+	Degraded int
+	Skipped  int
+}
+
 type indexedRegex struct {
 	match DomainMatch
 	re    *regexp.Regexp
 }
 
 type Dataset struct {
-	sites    map[string]model.GeoSite
-	geoips   map[string]model.GeoIP
-	exact    map[string][]DomainMatch
-	suffix   map[string][]DomainMatch
-	keywords []DomainMatch
-	regexes  []indexedRegex
-	prefixes map[netip.Prefix][]IPMatch
-	status   Status
+	sites     map[string]model.GeoSite
+	geoips    map[string]model.GeoIP
+	exact     map[string][]DomainMatch
+	suffix    map[string][]DomainMatch
+	keywords  []DomainMatch
+	regexes   []indexedRegex
+	prefixes  map[netip.Prefix][]IPMatch
+	status    Status
+	regexMode RegexMode
 }
 
-func New(geositeData, geoipData []byte) (*Dataset, error) {
+func New(geositeData, geoipData []byte, regexMode RegexMode) (*Dataset, error) {
+	if _, err := ParseRegexMode(string(regexMode)); err != nil {
+		return nil, err
+	}
 	sites, err := dat.ParseGeoSite(geositeData)
 	if err != nil {
 		return nil, err
@@ -60,11 +70,12 @@ func New(geositeData, geoipData []byte) (*Dataset, error) {
 	}
 
 	d := &Dataset{
-		sites:    make(map[string]model.GeoSite, len(sites)),
-		geoips:   make(map[string]model.GeoIP, len(geoips)),
-		exact:    make(map[string][]DomainMatch),
-		suffix:   make(map[string][]DomainMatch),
-		prefixes: make(map[netip.Prefix][]IPMatch),
+		sites:     make(map[string]model.GeoSite, len(sites)),
+		geoips:    make(map[string]model.GeoIP, len(geoips)),
+		exact:     make(map[string][]DomainMatch),
+		suffix:    make(map[string][]DomainMatch),
+		prefixes:  make(map[netip.Prefix][]IPMatch),
+		regexMode: regexMode,
 	}
 	for _, site := range sites {
 		d.sites[site.Name] = site
@@ -128,6 +139,40 @@ func (d *Dataset) GeoSiteIndex() map[string][]string {
 	return result
 }
 
+func (d *Dataset) GeoSite(name string) (model.GeoSite, error) {
+	setName, filter := splitFilter(strings.ToLower(name))
+	site, ok := d.sites[setName]
+	if !ok {
+		return model.GeoSite{}, fmt.Errorf("unknown geosite rule set %q", setName)
+	}
+	rules := make([]model.DomainRule, 0, len(site.Rules))
+	for _, rule := range site.Rules {
+		if filter != "" && !contains(rule.Attributes, filter) {
+			continue
+		}
+		rule.Attributes = append([]string(nil), rule.Attributes...)
+		rules = append(rules, rule)
+	}
+	return model.GeoSite{Name: setName, Rules: rules}, nil
+}
+
+func (d *Dataset) HasGeoSite(name string) bool {
+	setName, filter := splitFilter(strings.ToLower(name))
+	site, ok := d.sites[setName]
+	if !ok {
+		return false
+	}
+	if filter == "" {
+		return true
+	}
+	for _, rule := range site.Rules {
+		if contains(rule.Attributes, filter) {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *Dataset) GeoIPIndex() []string {
 	result := make([]string, 0, len(d.geoips))
 	for name := range d.geoips {
@@ -137,15 +182,20 @@ func (d *Dataset) GeoIPIndex() []string {
 	return result
 }
 
-func (d *Dataset) RenderGeoSite(name string) ([]byte, int, error) {
+func (d *Dataset) HasGeoIP(name string) bool {
+	_, ok := d.geoips[strings.ToLower(name)]
+	return ok
+}
+
+func (d *Dataset) RenderGeoSite(name string) ([]byte, RegexReport, error) {
 	setName, filter := splitFilter(strings.ToLower(name))
 	site, ok := d.sites[setName]
 	if !ok {
-		return nil, 0, fmt.Errorf("unknown geosite rule set %q", setName)
+		return nil, RegexReport{}, fmt.Errorf("unknown geosite rule set %q", setName)
 	}
 	lines := make([]string, 0, len(site.Rules))
 	seen := make(map[string]struct{}, len(site.Rules))
-	skippedRegex := 0
+	var report RegexReport
 	for _, rule := range site.Rules {
 		if filter != "" && !contains(rule.Attributes, filter) {
 			continue
@@ -159,7 +209,21 @@ func (d *Dataset) RenderGeoSite(name string) ([]byte, int, error) {
 		case model.DomainKeyword:
 			line = "DOMAIN-KEYWORD," + rule.Value
 		case model.DomainRegex:
-			skippedRegex++
+			regexLines, conversion := downgradeRegex(rule.Value, d.regexMode)
+			switch conversion {
+			case regexExact:
+				report.Exact++
+			case regexDegraded:
+				report.Degraded++
+			case regexSkipped:
+				report.Skipped++
+			}
+			for _, regexLine := range regexLines {
+				if _, exists := seen[regexLine]; !exists {
+					seen[regexLine] = struct{}{}
+					lines = append(lines, regexLine)
+				}
+			}
 			continue
 		}
 		if _, exists := seen[line]; !exists {
@@ -167,7 +231,7 @@ func (d *Dataset) RenderGeoSite(name string) ([]byte, int, error) {
 			lines = append(lines, line)
 		}
 	}
-	return []byte(strings.Join(lines, "\n") + "\n"), skippedRegex, nil
+	return []byte(strings.Join(lines, "\n") + "\n"), report, nil
 }
 
 func (d *Dataset) RenderGeoIP(name string) ([]byte, error) {
@@ -261,14 +325,20 @@ func normalizeDomain(value string) string {
 }
 
 func uniqueDomainMatches(matches []DomainMatch) []DomainMatch {
-	seen := make(map[string]struct{}, len(matches))
+	positions := make(map[string]int, len(matches))
 	result := make([]DomainMatch, 0, len(matches))
 	for _, match := range matches {
 		key := match.RuleSet + "\x00" + string(match.Kind) + "\x00" + match.Value
-		if _, exists := seen[key]; exists {
+		if position, exists := positions[key]; exists {
+			for _, attribute := range match.Attributes {
+				if !contains(result[position].Attributes, attribute) {
+					result[position].Attributes = append(result[position].Attributes, attribute)
+				}
+			}
 			continue
 		}
-		seen[key] = struct{}{}
+		match.Attributes = append([]string(nil), match.Attributes...)
+		positions[key] = len(result)
 		result = append(result, match)
 	}
 	sort.Slice(result, func(i, j int) bool {

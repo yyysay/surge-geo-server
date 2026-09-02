@@ -42,7 +42,7 @@ func testDataset() *Dataset {
 
 func TestRenderGeoSiteSkipsRegexAndSupportsFilter(t *testing.T) {
 	d := testDataset()
-	body, skipped, err := d.RenderGeoSite("example")
+	body, report, err := d.RenderGeoSite("example")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,8 +52,8 @@ func TestRenderGeoSiteSkipsRegexAndSupportsFilter(t *testing.T) {
 			t.Fatalf("rendered rules %q do not contain %q", got, want)
 		}
 	}
-	if skipped != 1 {
-		t.Fatalf("skipped regex = %d, want 1", skipped)
+	if report.Skipped != 1 {
+		t.Fatalf("regex report = %+v, want one skipped rule", report)
 	}
 
 	filtered, _, err := d.RenderGeoSite("example@cn")
@@ -62,6 +62,45 @@ func TestRenderGeoSiteSkipsRegexAndSupportsFilter(t *testing.T) {
 	}
 	if string(filtered) != "DOMAIN,exact.example.net\n" {
 		t.Fatalf("filtered rules = %q", filtered)
+	}
+}
+
+func TestGeoSiteReturnsRawRulesAndSupportsFilter(t *testing.T) {
+	d := testDataset()
+	site, err := d.GeoSite("EXAMPLE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if site.Name != "example" || len(site.Rules) != 4 {
+		t.Fatalf("site = %#v, want example with four raw rules", site)
+	}
+	filtered, err := d.GeoSite("example@cn")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filtered.Rules) != 1 || filtered.Rules[0].Kind != model.DomainFull || filtered.Rules[0].Value != "exact.example.net" {
+		t.Fatalf("filtered site = %#v", filtered)
+	}
+	if _, err := d.GeoSite("missing"); err == nil {
+		t.Fatal("GeoSite(missing) succeeded")
+	}
+	if !d.HasGeoSite("example") || !d.HasGeoSite("example@cn") || d.HasGeoSite("example@missing") || d.HasGeoSite("missing") {
+		t.Fatal("HasGeoSite returned an unexpected result")
+	}
+}
+
+func TestRenderGeoSiteBalancedDegradesRegex(t *testing.T) {
+	d := testDataset()
+	d.regexMode = RegexBalanced
+	body, report, err := d.RenderGeoSite("example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Degraded != 1 || report.Exact != 0 || report.Skipped != 0 {
+		t.Fatalf("regex report = %+v, want one degraded rule", report)
+	}
+	if !strings.Contains(string(body), "DOMAIN-WILDCARD,api[0-9]*.example.org") {
+		t.Fatalf("rendered rules %q do not contain balanced regex fallback", body)
 	}
 }
 
@@ -75,6 +114,16 @@ func TestLookupDomain(t *testing.T) {
 		if len(matches) != 1 {
 			t.Fatalf("LookupDomain(%q) returned %d matches, want 1: %#v", domain, len(matches), matches)
 		}
+	}
+}
+
+func TestUniqueDomainMatchesMergesAttributes(t *testing.T) {
+	matches := uniqueDomainMatches([]DomainMatch{
+		{RuleSet: "example", Kind: model.DomainFull, Value: "example.com", Attributes: []string{"cn"}},
+		{RuleSet: "example", Kind: model.DomainFull, Value: "example.com", Attributes: []string{"local"}},
+	})
+	if len(matches) != 1 || !contains(matches[0].Attributes, "cn") || !contains(matches[0].Attributes, "local") {
+		t.Fatalf("merged matches = %#v", matches)
 	}
 }
 

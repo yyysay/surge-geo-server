@@ -1,14 +1,13 @@
 services:
   surge-geo-server:
     build: .
+    platform: linux/amd64
     container_name: surge-geo-server
+    user: "0:0"
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - surge-geo-data:/data
+      - ./data:/data
     environment:
-      REFRESH_INTERVAL: 6h
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
     restart: unless-stopped
-
-volumes:
-  surge-geo-data:

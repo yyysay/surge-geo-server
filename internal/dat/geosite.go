@@ -107,7 +107,7 @@ func parseDomain(data []byte) (model.DomainRule, error) {
 				return rule, fmt.Errorf("domain: invalid value")
 			}
 			data = data[consumed:]
-			rule.Value = strings.ToLower(strings.TrimSpace(string(value)))
+			rule.Value = strings.TrimSpace(string(value))
 		case num == 3 && typ == protowire.BytesType:
 			value, consumed := protowire.ConsumeBytes(data)
 			if consumed < 0 {
@@ -136,6 +136,9 @@ func parseDomain(data []byte) (model.DomainRule, error) {
 		rule.Kind = model.DomainFull
 	default:
 		return rule, fmt.Errorf("domain: unknown type %d", domainType)
+	}
+	if rule.Kind != model.DomainRegex {
+		rule.Value = strings.ToLower(rule.Value)
 	}
 	return rule, nil
 }
