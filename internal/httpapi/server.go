@@ -16,7 +16,12 @@ var assets embed.FS
 
 type CurrentDataset func() *rules.Dataset
 
-func New(current CurrentDataset) http.Handler {
+type SourceConfig struct {
+	GeoSiteURL string `json:"geosite_url"`
+	GeoIPURL   string `json:"geoip_url"`
+}
+
+func New(current CurrentDataset, sources SourceConfig) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", serveIndex)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -25,6 +30,9 @@ func New(current CurrentDataset) http.Handler {
 	})
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, current().Status())
+	})
+	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, sources)
 	})
 	mux.HandleFunc("GET /api/lookup/domain", func(w http.ResponseWriter, r *http.Request) {
 		value := r.URL.Query().Get("value")

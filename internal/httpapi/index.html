@@ -18,7 +18,13 @@
     input { min-width:0; flex:1; padding:11px 12px; border:1px solid var(--border); border-radius:10px; background:Canvas; color:CanvasText; }
     button { padding:11px 16px; border:0; border-radius:10px; background:var(--accent); color:white; font-weight:650; cursor:pointer; }
     pre { min-height:110px; margin:14px 0 0; padding:13px; overflow:auto; border-radius:10px; background:color-mix(in srgb, CanvasText 7%, Canvas); white-space:pre-wrap; word-break:break-word; }
-    .links { margin-top:16px; }
+    .links, .sources { margin-top:16px; }
+    .sources form { display:grid; gap:12px; }
+    .field { display:grid; gap:6px; }
+    .field span { font-size:13px; opacity:.72; }
+    .hint { margin:0 0 14px; opacity:.68; }
+    .actions { display:flex; align-items:center; gap:10px; }
+    .actions small { opacity:.65; }
     code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
     @media (max-width:700px) { main{margin-top:28px}.grid{grid-template-columns:1fr} }
   </style>
@@ -43,9 +49,28 @@
     <h2>规则地址</h2>
     <div><code>/geosite/openai</code>　<code>/geosite/google@cn</code>　<code>/geoip/cn</code></div>
   </section>
+  <section class="card sources">
+    <h2>数据源配置</h2>
+    <p class="hint">默认显示服务当前使用的数据源。修改后可生成对应的启动参数和 Docker 环境变量；为避免公开服务产生 SSRF 风险，本页面不会直接热切换服务器数据源。</p>
+    <form id="source-form">
+      <label class="field">
+        <span>Geosite DAT 地址</span>
+        <input name="geosite_url" type="url" required placeholder="https://example.com/geosite.dat" autocomplete="url">
+      </label>
+      <label class="field">
+        <span>GeoIP DAT 地址</span>
+        <input name="geoip_url" type="url" required placeholder="https://example.com/geoip.dat" autocomplete="url">
+      </label>
+      <div class="actions">
+        <button type="submit">生成配置</button>
+        <small>修改后重启服务生效</small>
+      </div>
+    </form>
+    <pre id="source-output">正在读取当前数据源…</pre>
+  </section>
 </main>
 <script>
-for (const form of document.querySelectorAll('form')) {
+for (const form of document.querySelectorAll('form[data-kind]')) {
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const output = form.nextElementSibling;
@@ -64,6 +89,54 @@ for (const form of document.querySelectorAll('form')) {
     } catch (error) { output.textContent = `错误：${error.message}`; }
   });
 }
+
+const sourceForm = document.querySelector('#source-form');
+const sourceOutput = document.querySelector('#source-output');
+
+function validHTTPURL(value) {
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password;
+  } catch { return false; }
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function renderSourceConfig() {
+  const data = new FormData(sourceForm);
+  const geosite = data.get('geosite_url').trim();
+  const geoip = data.get('geoip_url').trim();
+  if (!validHTTPURL(geosite) || !validHTTPURL(geoip)) {
+    sourceOutput.textContent = '请输入不包含账号密码的 HTTP 或 HTTPS 地址。';
+    return;
+  }
+  sourceOutput.textContent = `命令行参数：
+-geosite-url ${shellQuote(geosite)} \\
+  -geoip-url ${shellQuote(geoip)}
+
+Docker Compose 环境变量：
+GEOSITE_URL=${geosite}
+GEOIP_URL=${geoip}`;
+}
+
+sourceForm.addEventListener('submit', event => {
+  event.preventDefault();
+  renderSourceConfig();
+});
+
+fetch('/api/config')
+  .then(response => {
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  })
+  .then(config => {
+    sourceForm.elements.geosite_url.value = config.geosite_url;
+    sourceForm.elements.geoip_url.value = config.geoip_url;
+    renderSourceConfig();
+  })
+  .catch(error => { sourceOutput.textContent = `读取数据源失败：${error.message}`; });
 </script>
 </body>
 </html>

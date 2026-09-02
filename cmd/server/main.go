@@ -92,7 +92,10 @@ func main() {
 		}
 	}()
 
-	handler := httpapi.New(func() *rules.Dataset { return current.Load() })
+	handler := httpapi.New(
+		func() *rules.Dataset { return current.Load() },
+		httpapi.SourceConfig{GeoSiteURL: *geositeURL, GeoIPURL: *geoipURL},
+	)
 	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 	go func() {
 		slog.Info("server started", "listen", *listen)
