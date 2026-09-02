@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yangtudou/surge-geo-server/internal/model"
+	"github.com/yyysay/surge-geo-server/internal/model"
 )
 
 func testDataset() *Dataset {

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yangtudou/surge-geo-server/internal/dat"
-	"github.com/yangtudou/surge-geo-server/internal/model"
+	"github.com/yyysay/surge-geo-server/internal/dat"
+	"github.com/yyysay/surge-geo-server/internal/model"
 )
 
 type DomainMatch struct {

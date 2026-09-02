@@ -1,4 +1,4 @@
-module github.com/yangtudou/surge-geo-server
+module github.com/yyysay/surge-geo-server
 
 go 1.26
 

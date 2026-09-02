@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yangtudou/surge-geo-server/internal/model"
+	"github.com/yyysay/surge-geo-server/internal/model"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 

@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/yangtudou/surge-geo-server/internal/rules"
+	"github.com/yyysay/surge-geo-server/internal/rules"
 )
 
 //go:embed index.html

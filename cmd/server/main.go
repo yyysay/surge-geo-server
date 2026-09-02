@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yangtudou/surge-geo-server/internal/httpapi"
-	"github.com/yangtudou/surge-geo-server/internal/rules"
-	"github.com/yangtudou/surge-geo-server/internal/source"
+	"github.com/yyysay/surge-geo-server/internal/httpapi"
+	"github.com/yyysay/surge-geo-server/internal/rules"
+	"github.com/yyysay/surge-geo-server/internal/source"
 )
 
 const (
