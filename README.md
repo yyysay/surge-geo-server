@@ -144,10 +144,9 @@ RULE-SET,https://rules.example.com/geoip/cn,DIRECT,no-resolve
 规则只存在当前浏览器的 `localStorage` 中，服务端不提供 `/api/rules/*`。清除站点数据、
 更换浏览器或更换访问域名后，需要重新填写规则。
 
-查询区将 Geosite 与 GeoIP 分开处理。选择 Geosite 后，输入包含 `.` 的域名会显示首条
-命中的本地规则、策略、服务端匹配耗时，以及该域名匹配到的所有 Geosite 分类；输入
-`openai`、`cn` 或 `apple@cn` 这类归属名则展开对应 Geosite 分类。选择 GeoIP 后，可用
-相同方式单独查询 IP 或 GeoIP 归属，不会同时探测 Geosite 数据。
+查询框会自动区分用途：输入包含 `.` 或 `:` 的域名/IP 时执行规则测试；输入 `openai`、
+`cn` 或 `apple@cn` 这类集合名时查询 DAT 归属。规则测试只显示首条命中规则、策略和
+服务端匹配耗时，不再显示完整 Geo 归属。
 
 ## Surge 使用示例
 
