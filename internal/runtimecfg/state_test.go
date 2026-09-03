@@ -87,6 +87,11 @@ func TestReloadConfigFile(t *testing.T) {
 }
 
 func TestNewUsesValidLocalDataWhenInitialSyncFails(t *testing.T) {
+	server := runtimeSourceServer(t)
+	geositeURL := server.URL + "/geosite.dat"
+	geoipURL := server.URL + "/geoip.dat"
+	server.Close()
+
 	dataDir := t.TempDir()
 	sourceDir := filepath.Join(dataDir, "sources")
 	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
@@ -100,8 +105,8 @@ func TestNewUsesValidLocalDataWhenInitialSyncFails(t *testing.T) {
 	}
 
 	state, err := New(context.Background(), Options{DataDir: dataDir, Initial: Config{
-		GeoSiteURL: "http://127.0.0.1:1/geosite.dat",
-		GeoIPURL:   "http://127.0.0.1:1/geoip.dat",
+		GeoSiteURL: geositeURL,
+		GeoIPURL:   geoipURL,
 		RegexMode:  "strict",
 	}})
 	if err != nil {

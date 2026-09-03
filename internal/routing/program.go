@@ -46,11 +46,12 @@ type Evaluation struct {
 }
 
 type Decision struct {
-	Query           string      `json:"query"`
-	Kind            string      `json:"kind"`
-	Policy          string      `json:"policy,omitempty"`
-	Matched         *Evaluation `json:"matched,omitempty"`
-	MatchDurationNS int64       `json:"match_duration_ns"`
+	Query      string       `json:"query"`
+	Kind       string       `json:"kind"`
+	Policy     string       `json:"policy,omitempty"`
+	Matched    *Evaluation  `json:"matched,omitempty"`
+	Trace      []Evaluation `json:"trace"`
+	GeoMatches any          `json:"geo_matches,omitempty"`
 }
 
 func Parse(text string) (*Program, error) {
@@ -203,7 +204,7 @@ func (p *Program) Validate(dataset *rules.Dataset) error {
 // Evaluate walks the program from top to bottom and stops at its first match.
 func (p *Program) Evaluate(value string, dataset *rules.Dataset) (Decision, error) {
 	query := strings.TrimSpace(value)
-	decision := Decision{Query: query}
+	decision := Decision{Query: query, Trace: make([]Evaluation, 0, len(p.Rules))}
 	addr, ipErr := netip.ParseAddr(query)
 	var domain string
 	var domainMatches []rules.DomainMatch
@@ -215,6 +216,7 @@ func (p *Program) Evaluate(value string, dataset *rules.Dataset) (Decision, erro
 			return Decision{}, err
 		}
 		ipMatches = matches
+		decision.GeoMatches = matches
 	} else {
 		decision.Kind = "domain"
 		domain = normalizeDomain(query)
@@ -226,10 +228,12 @@ func (p *Program) Evaluate(value string, dataset *rules.Dataset) (Decision, erro
 			return Decision{}, err
 		}
 		domainMatches = matches
+		decision.GeoMatches = matches
 	}
 
 	for _, rule := range p.Rules {
 		evaluation := evaluateRule(rule, decision.Kind, domain, addr, domainMatches, ipMatches)
+		decision.Trace = append(decision.Trace, evaluation)
 		if evaluation.Matched {
 			decision.Policy = rule.Policy
 			matched := evaluation

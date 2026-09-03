@@ -129,21 +129,6 @@ func TestUniqueDomainMatchesMergesAttributes(t *testing.T) {
 
 func TestRenderAndLookupGeoIP(t *testing.T) {
 	d := testDataset()
-	set, err := d.GeoIP("GOOGLE")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if set.Name != "google" || len(set.CIDRs) != 1 || set.CIDRs[0] != "8.8.8.0/24" {
-		t.Fatalf("GeoIP returned %#v", set)
-	}
-	set.CIDRs[0] = "mutated"
-	again, err := d.GeoIP("google")
-	if err != nil || again.CIDRs[0] != "8.8.8.0/24" {
-		t.Fatalf("GeoIP did not return a copy: %#v, %v", again, err)
-	}
-	if _, err := d.GeoIP("missing"); err == nil {
-		t.Fatal("GeoIP(missing) succeeded")
-	}
 	body, err := d.RenderGeoIP("google")
 	if err != nil {
 		t.Fatal(err)

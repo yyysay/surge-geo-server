@@ -118,8 +118,7 @@ mkdir -p data/sources
 
 ## 浏览器规则
 
-网页使用可视化列表维护规则，每条规则包含类型、归属和策略，并可添加、删除或调整
-顺序。当前只支持 Mihomo 的 Geodata 规则，不需要也不支持 `MATCH`：
+网页规则只支持 Mihomo 的 Geodata 写法，不需要也不支持 `MATCH`：
 
 ```yaml
 GEOSITE,google,手动选择
@@ -127,8 +126,8 @@ GEOSITE,cn,DIRECT
 GEOIP,CN,DIRECT,no-resolve
 ```
 
-规则修改后立即保存在浏览器本地。点击“生成 Surge 配置”时，页面根据当前 Go 服务的
-地址自动生成订阅 URL。例如页面位于 `https://rules.example.com` 时，上面的规则会生成：
+规则输入后立即保存在浏览器本地。点击“生成 Surge 配置”时，页面根据当前 Go 服务的地址
+自动生成订阅 URL。例如页面位于 `https://rules.example.com` 时，上面的规则会生成：
 
 ```ini
 RULE-SET,https://rules.example.com/geosite/google,手动选择
@@ -143,10 +142,6 @@ RULE-SET,https://rules.example.com/geoip/cn,DIRECT,no-resolve
 
 规则只存在当前浏览器的 `localStorage` 中，服务端不提供 `/api/rules/*`。清除站点数据、
 更换浏览器或更换访问域名后，需要重新填写规则。
-
-查询框会自动区分用途：输入包含 `.` 或 `:` 的域名/IP 时执行规则测试；输入 `openai`、
-`cn` 或 `apple@cn` 这类集合名时查询 DAT 归属。规则测试只显示首条命中规则、策略和
-服务端匹配耗时，不再显示完整 Geo 归属。
 
 ## Surge 使用示例
 
@@ -250,27 +245,18 @@ Content-Type: application/x-www-form-urlencoded
 value=google.com&rules=GEOSITE%2Cgoogle%2CProxy
 ```
 
-`rules` 只接受 `GEOSITE` 和 `GEOIP`，返回第一条命中规则、策略以及
-`match_duration_ns`。耗时只统计服务端数据查询和有序规则匹配，不包含 HTTP 往返与规则
-解析；单次结果适合快速观察，不应作为严格性能结论。规则只用于本次请求，不会在服务端
-保存。
-
-需要稳定比较匹配性能时运行内置 benchmark：
-
-```bash
-go test -bench=BenchmarkEvaluateGeoSite -benchmem ./internal/routing
-```
+`rules` 只接受 `GEOSITE` 和 `GEOIP`，返回第一条命中规则的策略、规则匹配记录和 Geo
+归属。规则只用于本次请求，不会在服务端保存。
 
 ### 查询 Geosite 原始数据（调试接口）
 
 ```http
 GET /api/geosite/openai
 GET /api/geosite/google@cn
-GET /api/geoip/cn
 ```
 
-这些接口返回 DAT 中保存的原始 Geosite 规则或 GeoIP CIDR，不进行 Surge 格式转换。
-网页不会单独放置分组浏览器，而是通过顶部查询框按集合名查看。
+该接口仅供调试，返回 DAT 中保存的原始 `domain`、`full`、`keyword`、`regexp` 规则
+及属性，不进行 Surge 格式转换；网页不提供原始分组浏览器。
 
 ### 查询 IP 归属
 

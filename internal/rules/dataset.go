@@ -187,15 +187,6 @@ func (d *Dataset) HasGeoIP(name string) bool {
 	return ok
 }
 
-func (d *Dataset) GeoIP(name string) (model.GeoIP, error) {
-	setName := strings.ToLower(strings.TrimSpace(name))
-	set, ok := d.geoips[setName]
-	if !ok {
-		return model.GeoIP{}, fmt.Errorf("unknown geoip rule set %q", setName)
-	}
-	return model.GeoIP{Name: set.Name, CIDRs: append([]string(nil), set.CIDRs...)}, nil
-}
-
 func (d *Dataset) RenderGeoSite(name string) ([]byte, RegexReport, error) {
 	setName, filter := splitFilter(strings.ToLower(name))
 	site, ok := d.sites[setName]
