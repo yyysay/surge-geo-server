@@ -22,6 +22,7 @@
     input,select,textarea { min-width:0; color:var(--text); background:var(--surface); border:1px solid var(--line); border-radius:8px; outline:none; }
     input:focus,select:focus,textarea:focus { border-color:var(--accent); }
     input,select { padding:10px 11px; }
+    form.query select { width:112px; padding:12px 11px; }
     form.query input { flex:1; padding:12px 13px; font-size:15px; }
     button { padding:9px 14px; border-radius:8px; font-weight:650; }
     .primary { border:1px solid var(--accent); background:var(--accent); color:var(--bg); }
@@ -74,7 +75,11 @@
       <section>
         <div class="head"><h2>查询</h2></div>
         <form id="query-form" class="query">
-          <input name="value" placeholder="域名、IP 或归属" autocomplete="off" autofocus>
+          <select name="dataset" aria-label="查询数据">
+            <option value="geosite">Geosite</option>
+            <option value="geoip">GeoIP</option>
+          </select>
+          <input name="value" placeholder="域名或归属" autocomplete="off" autofocus>
           <button class="primary">查询</button>
         </form>
         <div id="query-result" class="result" aria-live="polite"></div>
@@ -164,9 +169,10 @@
       } catch { localRules = structuredClone(defaultRules); }
     }
     function ruleText(rule) { return [rule.type,rule.value,rule.policy,...(rule.type === 'GEOIP' ? ['no-resolve'] : [])].join(','); }
-    function rulesText(validate = true) {
-      if (!localRules.length && validate) throw new Error('请先添加规则');
-      return localRules.map((rule,index) => {
+    function rulesText(validate = true,type = '') {
+      const selected = localRules.map((rule,index) => ({rule,index})).filter(item => !type || item.rule.type === type);
+      if (!selected.length && validate) throw new Error(`请先添加 ${type || ''} 规则`.replace('  ',' '));
+      return selected.map(({rule,index}) => {
         if (validate && (!rule.value.trim() || !rule.policy.trim())) throw new Error(`第 ${index + 1} 条规则缺少归属或策略`);
         if (validate && (rule.value.includes(',') || rule.policy.includes(','))) throw new Error(`第 ${index + 1} 条规则不能包含逗号`);
         return ruleText(rule);
@@ -197,29 +203,58 @@
     }
     function moveRule(index,offset) { const target = index + offset; if (target < 0 || target >= localRules.length) return; [localRules[index],localRules[target]] = [localRules[target],localRules[index]]; renderRules(); saveLocalRules(); }
 
+    queryForm.elements.dataset.addEventListener('change',() => {
+      queryForm.elements.value.placeholder = queryForm.elements.dataset.value === 'geoip' ? 'IP 或归属' : '域名或归属';
+      queryResult.className = 'result'; queryResult.replaceChildren(); queryForm.elements.value.focus();
+    });
     queryForm.addEventListener('submit',async event => {
-      event.preventDefault(); const value = new FormData(queryForm).get('value').trim(); if (!value) return;
+      event.preventDefault(); const form = new FormData(queryForm); const dataset = form.get('dataset'); const value = form.get('value').trim(); if (!value) return;
       const button = queryForm.querySelector('button'); button.disabled = true; queryResult.className = 'result visible'; queryResult.textContent = '…';
-      try { if (value.includes('.') || value.includes(':')) await testRules(value); else await lookupGroup(value); }
+      try {
+        if (dataset === 'geoip') await queryGeoIP(value);
+        else if (value.includes('.')) await queryDomain(value);
+        else await lookupGroup('geosite',value);
+      }
       catch (error) { showError(error); } finally { button.disabled = false; }
     });
-    async function testRules(value) {
-      const response = await fetch('/query',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({value,rules:rulesText()})});
-      const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    async function queryDomain(value) {
+      const [decision,matches] = await Promise.all([testRules(value,'GEOSITE'),lookupMatches('domain',value)]);
+      renderDecision(decision); renderOwnership('Geosite 归属',matches);
+    }
+    async function queryGeoIP(value) {
+      if (!value.includes(':') && !/^\d+(?:\.\d+){3}$/.test(value)) return lookupGroup('geoip',value);
+      const [decision,matches] = await Promise.all([testRules(value,'GEOIP'),lookupMatches('ip',value)]);
+      renderDecision(decision); renderOwnership('GeoIP 归属',matches);
+    }
+    async function testRules(value,type) {
+      if (!localRules.some(rule => rule.type === type)) return {};
+      const response = await fetch('/query',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({value,rules:rulesText(true,type)})});
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); return data;
+    }
+    async function lookupMatches(kind,value) {
+      const response = await fetch(`/api/lookup/${kind}?${new URLSearchParams({value})}`); const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); return data.matches || [];
+    }
+    function renderDecision(data) {
       queryResult.className = 'result visible'; queryResult.replaceChildren();
-      const outcome = node('div','outcome'); outcome.append(node('strong','policy',data.policy || '无匹配')); outcome.append(node('span','meta',formatDuration(data.match_duration_ns))); queryResult.append(outcome);
+      const outcome = node('div','outcome'); outcome.append(node('strong','policy',data.policy || '无匹配')); if (data.match_duration_ns !== undefined) outcome.append(node('span','meta',formatDuration(data.match_duration_ns))); queryResult.append(outcome);
       if (data.matched) queryResult.append(node('div','matched-rule',ruleText(data.matched.rule)));
     }
     function formatDuration(value) { const ns = Number(value || 0); if (ns < 1000) return `${ns} ns`; if (ns < 1000000) return `${(ns / 1000).toFixed(1)} µs`; return `${(ns / 1000000).toFixed(2)} ms`; }
-    async function lookupGroup(value) {
+    function renderOwnership(title,matches) {
+      const names = [...new Set(matches.map(match => match.rule_set))].sort();
+      const card = node('div','group-card'); const head = node('div','group-head'); head.append(node('strong','',title)); head.append(node('span','meta',`${names.length} 个分类`));
+      const list = node('ul','group-list'); for (const name of names) list.append(node('li','',name)); if (!names.length) list.append(node('li','meta','未找到归属'));
+      card.append(head,list); queryResult.append(card);
+    }
+    async function lookupGroup(type,value) {
       if (value.includes('/')) throw new Error('归属名称不能包含斜杠');
       const name = value.toLowerCase();
-      const [siteResponse,ipResponse] = await Promise.all([fetch(`/api/geosite/${encodeURIComponent(name)}`),fetch(`/api/geoip/${encodeURIComponent(name)}`)]);
-      const site = siteResponse.ok ? await siteResponse.json() : null; const geoip = ipResponse.ok ? await ipResponse.json() : null;
-      if (!site && !geoip) throw new Error(`没有找到归属 ${value}`);
+      const response = await fetch(`/api/${type}/${encodeURIComponent(name)}`); const group = await response.json();
+      if (!response.ok) throw new Error(group.error || `没有找到归属 ${value}`);
       queryResult.className = 'result visible'; queryResult.replaceChildren();
-      if (site) renderGroup('GEOSITE',site.name,site.rules.map(rule => { const attrs = rule.attributes?.length ? ` @${rule.attributes.join(' @')}` : ''; return `${rule.kind}:${rule.value}${attrs}`; }));
-      if (geoip) renderGroup('GEOIP',geoip.name,geoip.cidrs);
+      if (type === 'geosite') renderGroup('GEOSITE',group.name,group.rules.map(rule => { const attrs = rule.attributes?.length ? ` @${rule.attributes.join(' @')}` : ''; return `${rule.kind}:${rule.value}${attrs}`; }));
+      else renderGroup('GEOIP',group.name,group.cidrs);
     }
     function renderGroup(type,name,items) {
       const card = node('div','group-card'); const head = node('div','group-head'); head.append(node('strong','',`${type},${name}`)); head.append(node('span','meta',`${items.length} 条`));
