@@ -100,11 +100,13 @@ func New(runtime Runtime, adminToken string) http.Handler {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		started := time.Now()
 		decision, err := program.Evaluate(r.Form.Get("value"), snapshot.Dataset)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		decision.MatchDurationNS = time.Since(started).Nanoseconds()
 		writeJSON(w, http.StatusOK, decision)
 	})
 	mux.HandleFunc("GET /api/geosite/{name}", func(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +116,14 @@ func New(runtime Runtime, adminToken string) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, site)
+	})
+	mux.HandleFunc("GET /api/geoip/{name}", func(w http.ResponseWriter, r *http.Request) {
+		set, err := runtime.Snapshot().Dataset.GeoIP(r.PathValue("name"))
+		if err != nil {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, set)
 	})
 	mux.HandleFunc("GET /api/lookup/domain", func(w http.ResponseWriter, r *http.Request) {
 		value := r.URL.Query().Get("value")

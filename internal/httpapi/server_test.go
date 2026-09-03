@@ -120,14 +120,21 @@ func TestUIQueryReturnsFirstPolicyAndRulesAPIIsAbsent(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
 	}
-	var got struct {
-		Policy string `json:"policy"`
-	}
+	var got map[string]any
 	if err := json.NewDecoder(recorder.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Policy != "Direct" {
-		t.Fatalf("policy = %q, want Direct", got.Policy)
+	if got["policy"] != "Direct" {
+		t.Fatalf("policy = %q, want Direct", got["policy"])
+	}
+	if _, ok := got["match_duration_ns"]; !ok {
+		t.Fatal("query response omitted match_duration_ns")
+	}
+	if _, ok := got["trace"]; ok {
+		t.Fatal("query response still contains trace")
+	}
+	if _, ok := got["geo_matches"]; ok {
+		t.Fatal("query response still contains geo_matches")
 	}
 	recorder = httptest.NewRecorder()
 	form.Set("rules", "MATCH,Proxy")
@@ -147,7 +154,7 @@ func TestUIQueryReturnsFirstPolicyAndRulesAPIIsAbsent(t *testing.T) {
 }
 
 func TestRawGeoSiteEndpoint(t *testing.T) {
-	dataset, err := rules.New(testGeoSiteData(), nil, rules.RegexStrict)
+	dataset, err := rules.New(testGeoSiteData(), testGeoIPData(), rules.RegexStrict)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +172,19 @@ func TestRawGeoSiteEndpoint(t *testing.T) {
 	}
 	if site.Name != "example" || len(site.Rules) != 1 || site.Rules[0].Kind != model.DomainSuffix || site.Rules[0].Value != "example.com" {
 		t.Fatalf("site = %#v", site)
+	}
+
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/geoip/test", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("geoip status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var set model.GeoIP
+	if err := json.NewDecoder(recorder.Body).Decode(&set); err != nil {
+		t.Fatal(err)
+	}
+	if set.Name != "test" || len(set.CIDRs) != 1 || set.CIDRs[0] != "10.0.0.0/8" {
+		t.Fatalf("geoip set = %#v", set)
 	}
 }
 
@@ -215,4 +235,20 @@ func testGeoSiteData() []byte {
 	var result []byte
 	result = protowire.AppendTag(result, 1, protowire.BytesType)
 	return protowire.AppendBytes(result, site)
+}
+
+func testGeoIPData() []byte {
+	var cidr []byte
+	cidr = protowire.AppendTag(cidr, 1, protowire.BytesType)
+	cidr = protowire.AppendBytes(cidr, []byte{10, 0, 0, 0})
+	cidr = protowire.AppendTag(cidr, 2, protowire.VarintType)
+	cidr = protowire.AppendVarint(cidr, 8)
+	var set []byte
+	set = protowire.AppendTag(set, 1, protowire.BytesType)
+	set = protowire.AppendString(set, "TEST")
+	set = protowire.AppendTag(set, 2, protowire.BytesType)
+	set = protowire.AppendBytes(set, cidr)
+	var result []byte
+	result = protowire.AppendTag(result, 1, protowire.BytesType)
+	return protowire.AppendBytes(result, set)
 }

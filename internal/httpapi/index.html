@@ -5,21 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Surge Geo</title>
   <style>
-    :root {
-      color-scheme:light dark;
-      --bg:#fbfbfa; --surface:#fff; --text:#17201b; --muted:#707873;
-      --line:#e3e7e4; --accent:#287a52; --danger:#b33b36;
-      --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
-    }
-    @media (prefers-color-scheme:dark) {
-      :root { --bg:#101311; --surface:#151917; --text:#edf2ee; --muted:#99a19c; --line:#29302c; --accent:#65c792; --danger:#ff8d87; }
-    }
+    :root { color-scheme:light dark; --bg:#fbfbfa; --surface:#fff; --text:#17201b; --muted:#707873; --line:#e3e7e4; --accent:#287a52; --danger:#b33b36; --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+    @media (prefers-color-scheme:dark) { :root { --bg:#101311; --surface:#151917; --text:#edf2ee; --muted:#99a19c; --line:#29302c; --accent:#65c792; --danger:#ff8d87; } }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif; }
     button,input,select,textarea { font:inherit; }
     button { cursor:pointer; }
-    .shell { width:min(760px,calc(100% - 32px)); margin:0 auto; }
-    header { display:flex; align-items:center; justify-content:space-between; padding:32px 0 22px; border-bottom:1px solid var(--line); }
+    .shell { width:min(800px,calc(100% - 32px)); margin:0 auto; }
+    header { padding:32px 0 22px; border-bottom:1px solid var(--line); }
     h1 { margin:0; font-size:26px; line-height:1; letter-spacing:-.04em; }
     h2 { margin:0; font-size:15px; }
     .status,.meta { color:var(--muted); font-size:12px; }
@@ -34,23 +27,26 @@
     .primary { border:1px solid var(--accent); background:var(--accent); color:var(--bg); }
     .secondary { border:1px solid var(--line); background:var(--surface); color:var(--text); }
     button:disabled { cursor:wait; opacity:.55; }
-    textarea { display:block; width:100%; min-height:280px; padding:13px 14px; resize:vertical; font:13px/1.65 var(--mono); tab-size:2; }
-    textarea.output { min-height:120px; margin-top:10px; }
-    .status { display:block; min-height:18px; margin-top:8px; }
+    textarea.output { display:block; width:100%; min-height:120px; margin-top:10px; padding:13px 14px; resize:vertical; font:13px/1.65 var(--mono); }
+    .status { display:block; min-height:18px; }
     .status.bad,.error { color:var(--danger); }
     .result { display:none; padding-top:15px; }
     .result.visible { display:block; }
     .outcome { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
     .policy { font-size:22px; letter-spacing:-.025em; }
-    .result details { margin-top:11px; color:var(--muted); }
-    .result summary { cursor:pointer; }
-    .trace { margin-top:7px; border-top:1px solid var(--line); }
-    .trace-row { display:grid; grid-template-columns:1fr auto; gap:8px; padding:7px 0; border-bottom:1px solid var(--line); font:12px/1.45 var(--mono); }
-    .trace-row.skip { opacity:.48; }
-    .trace-row.hit .state { color:var(--accent); }
-    .state { font-family:ui-sans-serif,system-ui,sans-serif; }
-    .geo-list { max-height:190px; overflow:auto; margin:7px 0 0; padding:0; list-style:none; border-top:1px solid var(--line); font:12px/1.45 var(--mono); }
-    .geo-list li { padding:6px 0; border-bottom:1px solid var(--line); }
+    .matched-rule { margin-top:9px; padding:9px 11px; border:1px solid var(--line); border-radius:8px; background:var(--surface); font:13px/1.5 var(--mono); }
+    .group-card { margin-top:12px; }
+    .group-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; }
+    .group-list { max-height:260px; overflow:auto; margin:7px 0 0; padding:0; list-style:none; border-top:1px solid var(--line); font:12px/1.45 var(--mono); }
+    .group-list li { padding:6px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
+    .rule-list { border-bottom:1px solid var(--line); }
+    .rule-row { display:grid; grid-template-columns:108px minmax(150px,1fr) minmax(130px,.8fr) auto; gap:7px; padding:8px 0; border-top:1px solid var(--line); }
+    .rule-row select,.rule-row input { width:100%; padding:8px 9px; }
+    .rule-actions { display:flex; gap:4px; }
+    .icon { width:34px; padding:8px 0; border:1px solid var(--line); background:var(--surface); color:var(--muted); }
+    .icon.danger { color:var(--danger); }
+    .rule-footer,.actions { display:flex; align-items:center; gap:9px; margin-top:10px; }
+    .rule-footer .status { margin-left:auto; }
     details.config { padding:0; }
     details.config > summary { display:flex; align-items:center; justify-content:space-between; padding:20px 0; cursor:pointer; list-style:none; font-weight:650; }
     details.config > summary::-webkit-details-marker { display:none; }
@@ -61,10 +57,11 @@
     label { display:grid; gap:5px; color:var(--muted); font-size:12px; }
     label input,label select { width:100%; color:var(--text); }
     .wide { grid-column:1/-1; }
-    .actions { display:flex; gap:8px; margin-top:8px; }
-    @media (max-width:600px) {
+    @media (max-width:640px) {
       .shell { width:calc(100% - 24px); }
       header { padding-top:24px; }
+      .rule-row { grid-template-columns:96px 1fr; }
+      .rule-actions { grid-column:1/-1; justify-content:flex-end; }
       .config-grid { grid-template-columns:1fr; }
       .wide { grid-column:auto; }
     }
@@ -72,35 +69,34 @@
 </head>
 <body>
   <div class="shell">
-    <header>
-      <h1>Surge Geo</h1>
-    </header>
-
+    <header><h1>Surge Geo</h1></header>
     <main>
       <section>
         <div class="head"><h2>查询</h2></div>
         <form id="query-form" class="query">
-          <input name="value" placeholder="域名或 IP" autocomplete="off" autofocus>
+          <input name="value" placeholder="域名、IP 或归属" autocomplete="off" autofocus>
           <button class="primary">查询</button>
         </form>
         <div id="query-result" class="result" aria-live="polite"></div>
       </section>
-
       <section>
         <div class="head">
           <h2>规则</h2>
           <button id="export-rules" class="primary" type="button">生成 Surge 配置</button>
         </div>
-        <textarea id="rules" spellcheck="false" aria-label="规则"></textarea>
-        <span id="save-status" class="status">—</span>
+        <div id="rule-list" class="rule-list"></div>
+        <div class="rule-footer">
+          <button id="add-rule" class="secondary" type="button">添加规则</button>
+          <span id="save-status" class="status">—</span>
+        </div>
+        <datalist id="geosite-options"></datalist>
+        <datalist id="geoip-options"></datalist>
+        <datalist id="policy-options"><option value="DIRECT"></option><option value="REJECT"></option><option value="PROXY"></option><option value="手动选择"></option></datalist>
         <div id="export-panel" hidden>
           <textarea id="surge-output" class="output" aria-label="Surge 配置" readonly></textarea>
-          <div class="actions">
-            <button id="copy-rules" class="secondary" type="button">复制</button>
-          </div>
+          <div class="actions"><button id="copy-rules" class="secondary" type="button">复制</button></div>
         </div>
       </section>
-
       <details class="config">
         <summary>配置</summary>
         <div class="config-body">
@@ -109,20 +105,17 @@
             <label class="wide">GeoIP<input name="geoip_url" type="url" required></label>
             <label>Regex<select name="regex_mode"><option value="strict">strict</option><option value="balanced">balanced</option></select></label>
             <label>Token<input name="admin_token" type="password" autocomplete="off"></label>
-            <div class="wide">
-              <button class="secondary" type="submit">应用配置</button>
-              <span id="config-status" class="status"></span>
-            </div>
+            <div class="wide"><button class="secondary" type="submit">应用配置</button><span id="config-status" class="status"></span></div>
           </form>
         </div>
       </details>
     </main>
   </div>
-
   <script>
     const queryForm = document.querySelector('#query-form');
     const queryResult = document.querySelector('#query-result');
-    const rulesEditor = document.querySelector('#rules');
+    const ruleList = document.querySelector('#rule-list');
+    const addRuleButton = document.querySelector('#add-rule');
     const exportRulesButton = document.querySelector('#export-rules');
     const exportPanel = document.querySelector('#export-panel');
     const surgeOutput = document.querySelector('#surge-output');
@@ -130,183 +123,134 @@
     const saveStatus = document.querySelector('#save-status');
     const configForm = document.querySelector('#config-form');
     const configStatus = document.querySelector('#config-status');
-    const kindLabels = {suffix:'domain',full:'full',keyword:'keyword',regex:'regexp'};
-    const localRulesKey = 'surge-geo-rules-v1';
-    const defaultRules = 'GEOSITE,google,手动选择\nGEOIP,CN,DIRECT,no-resolve';
+    const visualRulesKey = 'surge-geo-visual-rules-v1';
+    const legacyRulesKey = 'surge-geo-rules-v1';
+    const defaultRules = [{type:'GEOSITE',value:'google',policy:'手动选择'},{type:'GEOIP',value:'cn',policy:'DIRECT'}];
+    let localRules = [];
     let configLoaded = false;
 
-    function node(tag, className, text) {
-      const element = document.createElement(tag);
-      if (className) element.className = className;
-      if (text !== undefined) element.textContent = text;
-      return element;
-    }
-    function ruleText(rule) {
-      const parts = [rule.type];
-      if (rule.value) parts.push(rule.value);
-      parts.push(rule.policy);
-      if (rule.options) parts.push(...rule.options);
-      return parts.join(',');
-    }
-    function showError(container, error) {
-      container.className = 'result visible error';
-      container.textContent = error.message;
-    }
-
-    queryForm.addEventListener('submit', async event => {
-      event.preventDefault();
-      const value = new FormData(queryForm).get('value').trim();
-      if (!value) return;
-      const button = queryForm.querySelector('button');
-      button.disabled = true;
-      queryResult.className = 'result visible';
-      queryResult.textContent = '…';
-      try {
-        const response = await fetch('/query', {
-          method:'POST',
-          headers:{'Content-Type':'application/x-www-form-urlencoded'},
-          body:new URLSearchParams({value,rules:rulesEditor.value})
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-        renderDecision(data);
-      } catch (error) { showError(queryResult,error); }
-      finally { button.disabled = false; }
-    });
-
-    function renderDecision(data) {
-      queryResult.className = 'result visible';
-      queryResult.replaceChildren();
-      const outcome = node('div','outcome');
-      outcome.append(node('strong','policy',data.policy || '无匹配'));
-      queryResult.append(outcome);
-
-      const traceDetails = node('details');
-      traceDetails.append(node('summary','',`规则匹配 (${(data.trace || []).length})`));
-      const trace = node('div','trace');
-      for (const item of data.trace || []) {
-        const row = node('div',`trace-row${item.matched ? ' hit' : item.applicable ? '' : ' skip'}`);
-        row.append(node('span','',ruleText(item.rule)));
-        row.append(node('span','state',item.matched ? '命中' : item.applicable ? '未命中' : '跳过'));
-        trace.append(row);
-      }
-      traceDetails.append(trace);
-      queryResult.append(traceDetails);
-
-      const matches = data.geo_matches || [];
-      const geoDetails = node('details');
-      geoDetails.append(node('summary','',`归属 (${matches.length})`));
-      const list = node('ul','geo-list');
-      for (const match of matches) {
-        const attrs = match.attributes?.length ? ` @${match.attributes.join(' @')}` : '';
-        const detail = match.cidr || `${kindLabels[match.kind] || match.kind}:${match.value}${attrs}`;
-        list.append(node('li','',`${match.rule_set} · ${detail}`));
-      }
-      geoDetails.append(list);
-      queryResult.append(geoDetails);
-    }
-
-    function payloadFromUI() {
-      return {
-        geosite_url:configForm.elements.geosite_url.value.trim(),
-        geoip_url:configForm.elements.geoip_url.value.trim(),
-        regex_mode:configForm.elements.regex_mode.value
-      };
-    }
-    async function applyConfig(trigger) {
-      if (!configLoaded) return;
-      trigger.disabled = true;
-      configStatus.className = 'status';
-      configStatus.textContent = '校验中…';
-      const headers = {'Content-Type':'application/json'};
-      const token = configForm.elements.admin_token.value;
-      if (token) headers.Authorization = `Bearer ${token}`;
-      try {
-        const response = await fetch('/api/config',{method:'PUT',headers,body:JSON.stringify(payloadFromUI())});
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-        configStatus.textContent = '已应用';
-      } catch (error) {
-        configStatus.className = 'status bad';
-        configStatus.textContent = error.message;
-      } finally { trigger.disabled = false; }
-    }
-
-    function localRuleLines() {
-      return rulesEditor.value.split(/\r?\n/).filter(line => {
-        const value = line.trim();
-        return value && !value.startsWith('#') && !value.startsWith(';') && !value.startsWith('//');
-      });
-    }
-    function saveLocalRules() {
-      try { localStorage.setItem(localRulesKey,rulesEditor.value); } catch {}
-      saveStatus.className = 'status';
-      saveStatus.textContent = `${localRuleLines().length} 条 · 本地`;
-      exportPanel.hidden = true;
-    }
+    function node(tag,className,text) { const element = document.createElement(tag); if (className) element.className = className; if (text !== undefined) element.textContent = text; return element; }
+    function showError(error) { queryResult.className = 'result visible error'; queryResult.textContent = error.message; }
     function parseCSVLine(line) {
       const fields = []; let field = '', quoted = false;
       for (let index = 0; index < line.length; index++) {
         const char = line[index];
-        if (char === '"') {
-          if (quoted && line[index + 1] === '"') { field += '"'; index++; }
-          else quoted = !quoted;
-        } else if (char === ',' && !quoted) { fields.push(field.trim()); field = ''; }
+        if (char === '"') { if (quoted && line[index + 1] === '"') { field += '"'; index++; } else quoted = !quoted; }
+        else if (char === ',' && !quoted) { fields.push(field.trim()); field = ''; }
         else field += char;
       }
       if (quoted) throw new Error('引号未闭合');
-      fields.push(field.trim());
-      return fields;
+      fields.push(field.trim()); return fields;
     }
-    function surgeRules() {
-      const output = [];
-      for (const [index,raw] of rulesEditor.value.split(/\r?\n/).entries()) {
+    function parseLegacyRules(text) {
+      const result = [];
+      for (const raw of text.split(/\r?\n/)) {
         let line = raw.trim();
         if (!line || line.startsWith('#') || line.startsWith(';') || line.startsWith('//')) continue;
         if (line.startsWith('- ')) line = line.slice(2).trim();
-        let fields;
-        try { fields = parseCSVLine(line); }
-        catch (error) { throw new Error(`第 ${index + 1} 行：${error.message}`); }
-        const type = (fields[0] || '').toUpperCase();
-        if (type !== 'GEOSITE' && type !== 'GEOIP') throw new Error(`第 ${index + 1} 行：只支持 GEOSITE 和 GEOIP`);
-        if (!fields[1] || !fields[2]) throw new Error(`第 ${index + 1} 行：缺少集合名或策略`);
-        const path = type === 'GEOSITE' ? 'geosite' : 'geoip';
-        const url = new URL(`/${path}/${encodeURIComponent(fields[1].toLowerCase())}`,location.origin).href;
-        const options = fields.slice(3).filter(Boolean);
-        if (type === 'GEOIP' && !options.some(value => value.toLowerCase() === 'no-resolve')) options.push('no-resolve');
-        output.push(['RULE-SET',url,fields[2],...options].join(','));
+        const fields = parseCSVLine(line); const type = (fields[0] || '').toUpperCase();
+        if ((type === 'GEOSITE' || type === 'GEOIP') && fields[1] && fields[2]) result.push({type,value:fields[1],policy:fields[2]});
       }
-      if (!output.length) throw new Error('没有可生成的规则');
-      return output.join('\n');
+      return result;
+    }
+    function loadLocalRules() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(visualRulesKey) || 'null');
+        if (Array.isArray(saved) && saved.length) {
+          localRules = saved.map(item => ({type:item.type === 'GEOIP' ? 'GEOIP' : 'GEOSITE',value:String(item.value || ''),policy:String(item.policy || '')})); return;
+        }
+        const legacy = parseLegacyRules(localStorage.getItem(legacyRulesKey) || '');
+        localRules = legacy.length ? legacy : structuredClone(defaultRules);
+      } catch { localRules = structuredClone(defaultRules); }
+    }
+    function ruleText(rule) { return [rule.type,rule.value,rule.policy,...(rule.type === 'GEOIP' ? ['no-resolve'] : [])].join(','); }
+    function rulesText(validate = true) {
+      if (!localRules.length && validate) throw new Error('请先添加规则');
+      return localRules.map((rule,index) => {
+        if (validate && (!rule.value.trim() || !rule.policy.trim())) throw new Error(`第 ${index + 1} 条规则缺少归属或策略`);
+        if (validate && (rule.value.includes(',') || rule.policy.includes(','))) throw new Error(`第 ${index + 1} 条规则不能包含逗号`);
+        return ruleText(rule);
+      }).join('\n');
+    }
+    function saveLocalRules() {
+      try { localStorage.setItem(visualRulesKey,JSON.stringify(localRules)); localStorage.setItem(legacyRulesKey,rulesText(false)); } catch {}
+      saveStatus.className = 'status'; saveStatus.textContent = `${localRules.length} 条 · 本地`; exportPanel.hidden = true;
+    }
+    function iconButton(text,label,action,disabled = false) {
+      const button = node('button','icon',text); button.type = 'button'; button.title = label; button.setAttribute('aria-label',label); button.disabled = disabled; button.addEventListener('click',action); return button;
+    }
+    function renderRules() {
+      ruleList.replaceChildren();
+      localRules.forEach((rule,index) => {
+        const row = node('div','rule-row');
+        const type = document.createElement('select'); type.setAttribute('aria-label',`第 ${index + 1} 条规则类型`);
+        for (const item of ['GEOSITE','GEOIP']) { const option = node('option','',item); option.value = item; option.selected = rule.type === item; type.append(option); }
+        type.addEventListener('change',() => { rule.type = type.value; renderRules(); saveLocalRules(); });
+        const value = document.createElement('input'); value.value = rule.value; value.placeholder = '归属'; value.setAttribute('aria-label',`第 ${index + 1} 条归属`); value.setAttribute('list',rule.type === 'GEOIP' ? 'geoip-options' : 'geosite-options'); value.addEventListener('input',() => { rule.value = value.value; saveLocalRules(); });
+        const policy = document.createElement('input'); policy.value = rule.policy; policy.placeholder = '策略'; policy.setAttribute('aria-label',`第 ${index + 1} 条策略`); policy.setAttribute('list','policy-options'); policy.addEventListener('input',() => { rule.policy = policy.value; saveLocalRules(); });
+        const actions = node('div','rule-actions');
+        actions.append(iconButton('↑',`上移第 ${index + 1} 条规则`,() => moveRule(index,-1),index === 0));
+        actions.append(iconButton('↓',`下移第 ${index + 1} 条规则`,() => moveRule(index,1),index === localRules.length - 1));
+        const remove = iconButton('×',`删除第 ${index + 1} 条规则`,() => { localRules.splice(index,1); renderRules(); saveLocalRules(); }); remove.classList.add('danger'); actions.append(remove);
+        row.append(type,value,policy,actions); ruleList.append(row);
+      });
+    }
+    function moveRule(index,offset) { const target = index + offset; if (target < 0 || target >= localRules.length) return; [localRules[index],localRules[target]] = [localRules[target],localRules[index]]; renderRules(); saveLocalRules(); }
+
+    queryForm.addEventListener('submit',async event => {
+      event.preventDefault(); const value = new FormData(queryForm).get('value').trim(); if (!value) return;
+      const button = queryForm.querySelector('button'); button.disabled = true; queryResult.className = 'result visible'; queryResult.textContent = '…';
+      try { if (value.includes('.') || value.includes(':')) await testRules(value); else await lookupGroup(value); }
+      catch (error) { showError(error); } finally { button.disabled = false; }
+    });
+    async function testRules(value) {
+      const response = await fetch('/query',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({value,rules:rulesText()})});
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      queryResult.className = 'result visible'; queryResult.replaceChildren();
+      const outcome = node('div','outcome'); outcome.append(node('strong','policy',data.policy || '无匹配')); outcome.append(node('span','meta',formatDuration(data.match_duration_ns))); queryResult.append(outcome);
+      if (data.matched) queryResult.append(node('div','matched-rule',ruleText(data.matched.rule)));
+    }
+    function formatDuration(value) { const ns = Number(value || 0); if (ns < 1000) return `${ns} ns`; if (ns < 1000000) return `${(ns / 1000).toFixed(1)} µs`; return `${(ns / 1000000).toFixed(2)} ms`; }
+    async function lookupGroup(value) {
+      if (value.includes('/')) throw new Error('归属名称不能包含斜杠');
+      const name = value.toLowerCase();
+      const [siteResponse,ipResponse] = await Promise.all([fetch(`/api/geosite/${encodeURIComponent(name)}`),fetch(`/api/geoip/${encodeURIComponent(name)}`)]);
+      const site = siteResponse.ok ? await siteResponse.json() : null; const geoip = ipResponse.ok ? await ipResponse.json() : null;
+      if (!site && !geoip) throw new Error(`没有找到归属 ${value}`);
+      queryResult.className = 'result visible'; queryResult.replaceChildren();
+      if (site) renderGroup('GEOSITE',site.name,site.rules.map(rule => { const attrs = rule.attributes?.length ? ` @${rule.attributes.join(' @')}` : ''; return `${rule.kind}:${rule.value}${attrs}`; }));
+      if (geoip) renderGroup('GEOIP',geoip.name,geoip.cidrs);
+    }
+    function renderGroup(type,name,items) {
+      const card = node('div','group-card'); const head = node('div','group-head'); head.append(node('strong','',`${type},${name}`)); head.append(node('span','meta',`${items.length} 条`));
+      const list = node('ul','group-list'); for (const item of items.slice(0,200)) list.append(node('li','',item)); if (items.length > 200) list.append(node('li','meta',`还有 ${items.length - 200} 条`));
+      card.append(head,list); queryResult.append(card);
     }
 
-    rulesEditor.addEventListener('input',saveLocalRules);
+    addRuleButton.addEventListener('click',() => { localRules.push({type:'GEOSITE',value:'',policy:'DIRECT'}); renderRules(); saveLocalRules(); ruleList.querySelector('.rule-row:last-child input')?.focus(); });
     exportRulesButton.addEventListener('click',() => {
       try {
-        surgeOutput.value = surgeRules();
-        exportPanel.hidden = false;
-        saveStatus.className = 'status';
-        saveStatus.textContent = `${localRuleLines().length} 条 · 本地`;
+        surgeOutput.value = localRules.map((rule,index) => {
+          if (!rule.value.trim() || !rule.policy.trim()) throw new Error(`第 ${index + 1} 条规则缺少归属或策略`);
+          const path = rule.type === 'GEOIP' ? 'geoip' : 'geosite'; const url = new URL(`/${path}/${encodeURIComponent(rule.value.toLowerCase())}`,location.origin).href;
+          return ['RULE-SET',url,rule.policy,...(rule.type === 'GEOIP' ? ['no-resolve'] : [])].join(',');
+        }).join('\n');
+        if (!surgeOutput.value) throw new Error('没有可生成的规则'); exportPanel.hidden = false; saveStatus.className = 'status'; saveStatus.textContent = `${localRules.length} 条 · 本地`;
       } catch (error) { saveStatus.className = 'status bad'; saveStatus.textContent = error.message; }
     });
-    copyRulesButton.addEventListener('click',async () => {
-      try { await navigator.clipboard.writeText(surgeOutput.value); copyRulesButton.textContent = '已复制'; }
-      catch { surgeOutput.select(); document.execCommand('copy'); copyRulesButton.textContent = '已复制'; }
-    });
-    try { rulesEditor.value = localStorage.getItem(localRulesKey) || defaultRules; }
-    catch { rulesEditor.value = defaultRules; }
-    saveLocalRules();
-    configForm.addEventListener('submit',event => { event.preventDefault(); applyConfig(configForm.querySelector('button')); });
+    copyRulesButton.addEventListener('click',async () => { try { await navigator.clipboard.writeText(surgeOutput.value); copyRulesButton.textContent = '已复制'; } catch { surgeOutput.select(); document.execCommand('copy'); copyRulesButton.textContent = '已复制'; } });
 
-    fetch('/api/config',{cache:'no-store'})
-      .then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); })
-      .then(config => {
-        configLoaded = true;
-        configForm.elements.geosite_url.value = config.geosite_url;
-        configForm.elements.geoip_url.value = config.geoip_url;
-        configForm.elements.regex_mode.value = config.regex_mode;
-      })
-      .catch(error => { configStatus.className = 'status bad'; configStatus.textContent = error.message; });
+    function payloadFromUI() { return {geosite_url:configForm.elements.geosite_url.value.trim(),geoip_url:configForm.elements.geoip_url.value.trim(),regex_mode:configForm.elements.regex_mode.value}; }
+    configForm.addEventListener('submit',async event => {
+      event.preventDefault(); if (!configLoaded) return; const trigger = configForm.querySelector('button'); trigger.disabled = true; configStatus.className = 'status'; configStatus.textContent = '校验中…';
+      const headers = {'Content-Type':'application/json'}; const token = configForm.elements.admin_token.value; if (token) headers.Authorization = `Bearer ${token}`;
+      try { const response = await fetch('/api/config',{method:'PUT',headers,body:JSON.stringify(payloadFromUI())}); const data = await response.json(); if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`); configStatus.textContent = '已应用'; }
+      catch (error) { configStatus.className = 'status bad'; configStatus.textContent = error.message; } finally { trigger.disabled = false; }
+    });
+    function fillOptions(id,values) { const list = document.querySelector(id); list.replaceChildren(); for (const value of values) { const option = document.createElement('option'); option.value = value; list.append(option); } }
+    Promise.all([fetch('/geosite').then(response => response.json()),fetch('/geoip').then(response => response.json())]).then(([sites,ips]) => { fillOptions('#geosite-options',Object.keys(sites).sort()); fillOptions('#geoip-options',ips); }).catch(() => {});
+    fetch('/api/config',{cache:'no-store'}).then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }).then(config => { configLoaded = true; configForm.elements.geosite_url.value = config.geosite_url; configForm.elements.geoip_url.value = config.geoip_url; configForm.elements.regex_mode.value = config.regex_mode; }).catch(error => { configStatus.className = 'status bad'; configStatus.textContent = error.message; });
+    loadLocalRules(); renderRules(); saveLocalRules();
   </script>
 </body>
 </html>

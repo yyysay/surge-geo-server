@@ -53,8 +53,26 @@ FINAL,Fallback`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Policy != "Specific" || decision.Matched == nil || decision.Matched.Rule.Line != 1 || len(decision.Trace) != 1 {
+	if decision.Policy != "Specific" || decision.Matched == nil || decision.Matched.Rule.Line != 1 {
 		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func BenchmarkEvaluateGeoSite(b *testing.B) {
+	dataset := routingDataset()
+	program, err := ParseGeo("GEOSITE,cn,DIRECT\nGEOIP,cn,DIRECT,no-resolve")
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := program.Validate(dataset); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := program.Evaluate("exact.example.cn", dataset); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
