@@ -66,16 +66,21 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-refreshTicker.C:
+				slog.Info("upstream refresh started")
 				changed, err := state.Refresh(ctx)
 				if err != nil {
-					slog.Warn("refresh failed", "error", err)
+					slog.Error("upstream refresh rejected; keeping current data", "error", err)
 				} else if changed {
-					slog.Info("upstream data hot-reloaded", "revision", state.Snapshot().Revision)
+					loaded := state.Snapshot()
+					status := loaded.Dataset.Status()
+					slog.Info("upstream refresh completed", "result", "updated", "revision", loaded.Revision, "geosite_sets", status.GeoSiteSets, "geoip_sets", status.GeoIPSets)
+				} else {
+					slog.Info("upstream refresh completed", "result", "unchanged", "revision", state.Snapshot().Revision)
 				}
 			case <-configTicker.C:
 				changed, err := state.ReloadConfig(ctx)
 				if err != nil {
-					slog.Warn("runtime config reload failed; keeping current snapshot", "error", err)
+					slog.Error("runtime config reload rejected; keeping current snapshot", "error", err)
 				} else if changed {
 					slog.Info("runtime config hot-reloaded", "revision", state.Snapshot().Revision)
 				}

@@ -145,6 +145,42 @@ func TestRenderAndLookupGeoIP(t *testing.T) {
 	}
 }
 
+func TestRenderedRuleSetsAreCachedWithoutSharingMutableBytes(t *testing.T) {
+	d := testDataset()
+
+	geositeBody, _, err := d.RenderGeoSite("EXAMPLE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.geosites.Load("example"); !ok {
+		t.Fatal("geosite render was not cached")
+	}
+	geositeBody[0] = 'X'
+	cachedGeoSiteBody, _, err := d.RenderGeoSite("example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cachedGeoSiteBody[0] == 'X' {
+		t.Fatal("caller mutated the cached geosite response")
+	}
+
+	geoipBody, err := d.RenderGeoIP("GOOGLE")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := d.geoipsOut.Load("google"); !ok {
+		t.Fatal("geoip render was not cached")
+	}
+	geoipBody[0] = 'X'
+	cachedGeoIPBody, err := d.RenderGeoIP("google")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cachedGeoIPBody[0] == 'X' {
+		t.Fatal("caller mutated the cached geoip response")
+	}
+}
+
 func mustRegex(pattern string) *regexp.Regexp {
 	return regexp.MustCompile(pattern)
 }

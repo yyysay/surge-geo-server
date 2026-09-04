@@ -79,6 +79,9 @@ func (f *Fetcher) Sync(ctx context.Context, url, destination string) (bool, erro
 	if err != nil {
 		return false, err
 	}
+	if len(raw) == 0 {
+		return false, fmt.Errorf("GET %s: empty response", url)
+	}
 	if len(raw) > maxDownloadSize {
 		return false, fmt.Errorf("GET %s: response exceeds %d bytes", url, maxDownloadSize)
 	}

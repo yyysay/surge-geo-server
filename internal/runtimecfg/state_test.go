@@ -1,6 +1,7 @@
 package runtimecfg
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -115,6 +116,58 @@ func TestNewUsesValidLocalDataWhenInitialSyncFails(t *testing.T) {
 	status := state.Snapshot().Dataset.Status()
 	if status.GeoSiteSets != 1 || status.GeoIPSets != 1 {
 		t.Fatalf("unexpected local data status: %#v", status)
+	}
+}
+
+func TestRefreshRejectsInvalidCandidateWithoutReplacingCachedData(t *testing.T) {
+	geosite := runtimeGeoSiteData()
+	geoip := runtimeGeoIPData()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/geosite.dat":
+			_, _ = w.Write(geosite)
+		case "/geoip.dat":
+			_, _ = w.Write(geoip)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	dataDir := t.TempDir()
+	state, err := New(context.Background(), Options{DataDir: dataDir, Initial: Config{
+		GeoSiteURL: server.URL + "/geosite.dat",
+		GeoIPURL:   server.URL + "/geoip.dat",
+		RegexMode:  "strict",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeSnapshot := state.Snapshot()
+	geositePath := filepath.Join(dataDir, "sources", "geosite.dat")
+	beforeDisk, err := os.ReadFile(geositePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// This is non-empty and valid protobuf wire data, but contains no Geosite sets.
+	geosite = []byte{0x10, 0x01}
+	changed, err := state.Refresh(context.Background())
+	if err == nil {
+		t.Fatal("empty dataset candidate was accepted")
+	}
+	if changed {
+		t.Fatal("invalid candidate was reported as published")
+	}
+	if state.Snapshot() != beforeSnapshot || state.Snapshot().Revision != 1 {
+		t.Fatal("invalid candidate changed the active snapshot")
+	}
+	afterDisk, readErr := os.ReadFile(geositePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(afterDisk, beforeDisk) {
+		t.Fatal("invalid candidate replaced the cached geosite DAT")
 	}
 }
 

@@ -47,7 +47,14 @@ type State struct {
 	geositePath string
 	geoipPath   string
 	configHash  [sha256.Size]byte
-	pendingData bool
+}
+
+type sourceCandidate struct {
+	dir            string
+	geositePath    string
+	geoipPath      string
+	geositeChanged bool
+	geoipChanged   bool
 }
 
 func New(ctx context.Context, options Options) (*State, error) {
@@ -86,13 +93,23 @@ func New(ctx context.Context, options Options) (*State, error) {
 		return nil, err
 	}
 
-	_, syncErr := state.syncSources(ctx, config)
-	snapshot, err := state.buildSnapshot(config, mode, 1, state.geositePath, state.geoipPath)
+	candidate, syncErr := state.prepareSourceCandidate(ctx, config)
+	geositePath, geoipPath := state.geositePath, state.geoipPath
+	if candidate != nil {
+		defer candidate.cleanup()
+		geositePath, geoipPath = candidate.geositePath, candidate.geoipPath
+	}
+	snapshot, err := state.buildSnapshot(config, mode, 1, geositePath, geoipPath)
 	if err != nil {
 		if syncErr != nil {
 			return nil, fmt.Errorf("initial source sync: %v; load local data: %w", syncErr, err)
 		}
 		return nil, err
+	}
+	if candidate != nil {
+		if err := state.commitSourceCandidate(candidate); err != nil {
+			return nil, fmt.Errorf("commit initial source data: %w", err)
+		}
 	}
 	state.current.Store(snapshot)
 	if configExists {
@@ -182,7 +199,6 @@ func (s *State) applyLocked(ctx context.Context, config Config, persist bool, fi
 	} else {
 		s.configHash = fileHash
 	}
-	s.pendingData = false
 	s.current.Store(candidate)
 	return candidate, nil
 }
@@ -214,25 +230,31 @@ func (s *State) Refresh(ctx context.Context) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current := s.current.Load()
-	changed, err := s.syncSources(ctx, current.Config)
-	if changed {
-		s.pendingData = true
-	}
+	candidateSources, err := s.prepareSourceCandidate(ctx, current.Config)
 	if err != nil {
 		return false, err
 	}
-	if !s.pendingData {
+	defer candidateSources.cleanup()
+	if !candidateSources.geositeChanged && !candidateSources.geoipChanged {
 		return false, nil
 	}
 	_, mode, err := normalizeConfig(current.Config)
 	if err != nil {
 		return false, err
 	}
-	candidate, err := s.buildSnapshot(current.Config, mode, current.Revision+1, s.geositePath, s.geoipPath)
+	candidate, err := s.buildSnapshot(
+		current.Config,
+		mode,
+		current.Revision+1,
+		candidateSources.geositePath,
+		candidateSources.geoipPath,
+	)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("validate refreshed source data: %w", err)
 	}
-	s.pendingData = false
+	if err := s.commitSourceCandidate(candidateSources); err != nil {
+		return false, fmt.Errorf("commit refreshed source data: %w", err)
+	}
 	s.current.Store(candidate)
 	return true, nil
 }
@@ -250,6 +272,13 @@ func (s *State) buildSnapshot(config Config, mode rules.RegexMode, revision uint
 	if err != nil {
 		return nil, fmt.Errorf("build dataset: %w", err)
 	}
+	status := dataset.Status()
+	if status.GeoSiteSets == 0 {
+		return nil, fmt.Errorf("build dataset: geosite data contains no rule sets")
+	}
+	if status.GeoIPSets == 0 {
+		return nil, fmt.Errorf("build dataset: geoip data contains no rule sets")
+	}
 	return &Snapshot{
 		Dataset:  dataset,
 		Config:   config,
@@ -258,16 +287,70 @@ func (s *State) buildSnapshot(config Config, mode rules.RegexMode, revision uint
 	}, nil
 }
 
-func (s *State) syncSources(ctx context.Context, config Config) (bool, error) {
-	geositeChanged, err := s.fetcher.Sync(ctx, config.GeoSiteURL, s.geositePath)
+func (s *State) prepareSourceCandidate(ctx context.Context, config Config) (*sourceCandidate, error) {
+	dir, err := os.MkdirTemp(s.dataDir, ".source-refresh-")
 	if err != nil {
-		return false, fmt.Errorf("sync geosite: %w", err)
+		return nil, err
 	}
-	geoipChanged, err := s.fetcher.Sync(ctx, config.GeoIPURL, s.geoipPath)
+	candidate := &sourceCandidate{
+		dir:         dir,
+		geositePath: filepath.Join(dir, "geosite.dat"),
+		geoipPath:   filepath.Join(dir, "geoip.dat"),
+	}
+	fail := func(err error) (*sourceCandidate, error) {
+		candidate.cleanup()
+		return nil, err
+	}
+	if err := stageSource(s.geositePath, candidate.geositePath); err != nil {
+		return fail(fmt.Errorf("stage geosite cache: %w", err))
+	}
+	if err := stageSource(s.geoipPath, candidate.geoipPath); err != nil {
+		return fail(fmt.Errorf("stage geoip cache: %w", err))
+	}
+	candidate.geositeChanged, err = s.fetcher.Sync(ctx, config.GeoSiteURL, candidate.geositePath)
 	if err != nil {
-		return geositeChanged, fmt.Errorf("sync geoip: %w", err)
+		return fail(fmt.Errorf("sync geosite candidate: %w", err))
 	}
-	return geositeChanged || geoipChanged, nil
+	candidate.geoipChanged, err = s.fetcher.Sync(ctx, config.GeoIPURL, candidate.geoipPath)
+	if err != nil {
+		return fail(fmt.Errorf("sync geoip candidate: %w", err))
+	}
+	return candidate, nil
+}
+
+func (s *State) commitSourceCandidate(candidate *sourceCandidate) error {
+	if candidate.geositeChanged {
+		if err := commitSource(candidate.geositePath, s.geositePath); err != nil {
+			return fmt.Errorf("commit geosite: %w", err)
+		}
+	}
+	if candidate.geoipChanged {
+		if err := commitSource(candidate.geoipPath, s.geoipPath); err != nil {
+			return fmt.Errorf("commit geoip: %w", err)
+		}
+	}
+	return nil
+}
+
+func (candidate *sourceCandidate) cleanup() {
+	_ = os.RemoveAll(candidate.dir)
+}
+
+func stageSource(sourcePath, candidatePath string) error {
+	if err := copyAtomic(sourcePath, candidatePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := copyAtomic(sourcePath+".meta.json", candidatePath+".meta.json"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func commitSource(candidatePath, destinationPath string) error {
+	if err := copyAtomic(candidatePath, destinationPath); err != nil {
+		return err
+	}
+	return copyAtomic(candidatePath+".meta.json", destinationPath+".meta.json")
 }
 
 func (s *State) persistConfig(config Config) ([]byte, error) {

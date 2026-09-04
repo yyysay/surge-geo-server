@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yyysay/surge-geo-server/internal/dat"
@@ -44,6 +45,11 @@ type indexedRegex struct {
 	re    *regexp.Regexp
 }
 
+type renderedGeoSite struct {
+	body   string
+	report RegexReport
+}
+
 type Dataset struct {
 	sites     map[string]model.GeoSite
 	geoips    map[string]model.GeoIP
@@ -54,6 +60,8 @@ type Dataset struct {
 	prefixes  map[netip.Prefix][]IPMatch
 	status    Status
 	regexMode RegexMode
+	geosites  sync.Map
+	geoipsOut sync.Map
 }
 
 func New(geositeData, geoipData []byte, regexMode RegexMode) (*Dataset, error) {
@@ -189,6 +197,14 @@ func (d *Dataset) HasGeoIP(name string) bool {
 
 func (d *Dataset) RenderGeoSite(name string) ([]byte, RegexReport, error) {
 	setName, filter := splitFilter(strings.ToLower(name))
+	cacheKey := setName
+	if filter != "" {
+		cacheKey += "@" + filter
+	}
+	if cached, ok := d.geosites.Load(cacheKey); ok {
+		rendered := cached.(renderedGeoSite)
+		return []byte(rendered.body), rendered.report, nil
+	}
 	site, ok := d.sites[setName]
 	if !ok {
 		return nil, RegexReport{}, fmt.Errorf("unknown geosite rule set %q", setName)
@@ -231,11 +247,19 @@ func (d *Dataset) RenderGeoSite(name string) ([]byte, RegexReport, error) {
 			lines = append(lines, line)
 		}
 	}
-	return []byte(strings.Join(lines, "\n") + "\n"), report, nil
+	body := strings.Join(lines, "\n") + "\n"
+	if len(lines) > 0 {
+		d.geosites.Store(cacheKey, renderedGeoSite{body: body, report: report})
+	}
+	return []byte(body), report, nil
 }
 
 func (d *Dataset) RenderGeoIP(name string) ([]byte, error) {
-	set, ok := d.geoips[strings.ToLower(name)]
+	cacheKey := strings.ToLower(name)
+	if cached, ok := d.geoipsOut.Load(cacheKey); ok {
+		return []byte(cached.(string)), nil
+	}
+	set, ok := d.geoips[cacheKey]
 	if !ok {
 		return nil, fmt.Errorf("unknown geoip rule set %q", name)
 	}
@@ -247,7 +271,9 @@ func (d *Dataset) RenderGeoIP(name string) ([]byte, error) {
 		}
 		lines = append(lines, kind+","+cidr+",no-resolve")
 	}
-	return []byte(strings.Join(lines, "\n") + "\n"), nil
+	body := strings.Join(lines, "\n") + "\n"
+	d.geoipsOut.Store(cacheKey, body)
+	return []byte(body), nil
 }
 
 func (d *Dataset) LookupDomain(value string) ([]DomainMatch, error) {
