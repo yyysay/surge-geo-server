@@ -53,8 +53,76 @@ FINAL,Fallback`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Policy != "Specific" || decision.Matched == nil || decision.Matched.Rule.Line != 1 || len(decision.Trace) != 1 {
+	if decision.Policy != "Specific" || decision.Matched == nil || decision.Matched.Rule.Line != 1 || len(decision.Trace) != 3 {
 		t.Fatalf("unexpected decision: %#v", decision)
+	}
+}
+
+func TestOrderDiagnostics(t *testing.T) {
+	dataset := routingDataset()
+	for _, test := range []struct {
+		name, query, text, policy                        string
+		winner, matched, shadowed, conflicting, overlaps int
+	}{
+		{"filtered overlap", "exact.example.cn", "# first line\nGEOSITE,shared,Proxy\n\nGEOSITE,cn@local,DIRECT\nGEOIP,cn,Unused", "Proxy", 2, 2, 1, 1, 2},
+		{"reordered", "exact.example.cn", "GEOSITE,cn@local,DIRECT\nGEOSITE,shared,Proxy", "DIRECT", 1, 2, 1, 1, 2},
+		{"same policy", "exact.example.cn", "GEOSITE,shared,DIRECT\nGEOSITE,cn,DIRECT", "DIRECT", 1, 2, 1, 0, 2},
+		{"duplicate reference", "exact.example.cn", "GEOSITE,CN,DIRECT\nRULE-SET,geosite/cn,Proxy", "DIRECT", 1, 2, 1, 1, 0},
+		{"no match", "unrelated.test", "GEOSITE,shared,DIRECT\nGEOSITE,cn,Proxy\nGEOIP,cn,DIRECT", "", 0, 0, 0, 0, 0},
+		{"IP overlap", "10.1.2.3", "GEOSITE,cn,Unused\nGEOIP,cn,DIRECT\nGEOIP,private,Proxy", "DIRECT", 2, 2, 1, 1, 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			program, err := Parse(test.text)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := program.Validate(dataset); err != nil {
+				t.Fatal(err)
+			}
+			decision, err := program.Evaluate(test.query, dataset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := decision.Diagnostics
+			if decision.Policy != test.policy || len(decision.Trace) != len(program.Rules) || d.MatchedRules != test.matched || d.ShadowedRules != test.shadowed || d.ConflictingRules != test.conflicting || len(d.OverlappingSets) != test.overlaps {
+				t.Fatalf("unexpected diagnosis: %+v", decision)
+			}
+			if test.winner == 0 {
+				if decision.Matched != nil {
+					t.Fatal("no-match query chose a winner")
+				}
+			} else if decision.Matched == nil || decision.Matched.Rule.Line != test.winner || !decision.Matched.Effective {
+				t.Fatalf("wrong winner: %+v", decision.Matched)
+			}
+			for _, item := range decision.Trace {
+				if item.Matched && !item.Effective && (item.ShadowedBy != test.winner || item.PolicyConflict != (item.Rule.Policy != test.policy)) {
+					t.Fatalf("wrong shadow evidence: %+v", item)
+				}
+				if !item.Matched && (item.ShadowedBy != 0 || item.Effective || item.PolicyConflict) {
+					t.Fatalf("non-match marked shadowed: %+v", item)
+				}
+			}
+			for _, set := range d.OverlappingSets {
+				if set.Detail == "" || len(set.Lines) == 0 {
+					t.Fatalf("overlap lacks evidence: %+v", set)
+				}
+			}
+		})
+	}
+}
+
+func TestOverlappingSetsGroupRepeatedReferences(t *testing.T) {
+	program, err := ParseGeo("GEOSITE,shared,Proxy\nGEOSITE,SHARED,Proxy\nGEOSITE,cn,DIRECT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := program.Evaluate("exact.example.cn", routingDataset())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sets := decision.Diagnostics.OverlappingSets
+	if len(sets) != 2 || sets[0].Name != "shared" || len(sets[0].Lines) != 2 || sets[0].Lines[0] != 1 || sets[0].Lines[1] != 2 || sets[1].Name != "cn" {
+		t.Fatalf("duplicate reference inflated overlap: %+v", sets)
 	}
 }
 
@@ -121,7 +189,19 @@ func routingGeoSiteData() []byte {
 	site = protowire.AppendBytes(site, domain)
 	var data []byte
 	data = protowire.AppendTag(data, 1, protowire.BytesType)
-	return protowire.AppendBytes(data, site)
+	data = protowire.AppendBytes(data, site)
+	var sharedDomain []byte
+	sharedDomain = protowire.AppendTag(sharedDomain, 1, protowire.VarintType)
+	sharedDomain = protowire.AppendVarint(sharedDomain, 2)
+	sharedDomain = protowire.AppendTag(sharedDomain, 2, protowire.BytesType)
+	sharedDomain = protowire.AppendString(sharedDomain, "example.cn")
+	var shared []byte
+	shared = protowire.AppendTag(shared, 1, protowire.BytesType)
+	shared = protowire.AppendString(shared, "shared")
+	shared = protowire.AppendTag(shared, 2, protowire.BytesType)
+	shared = protowire.AppendBytes(shared, sharedDomain)
+	data = protowire.AppendTag(data, 1, protowire.BytesType)
+	return protowire.AppendBytes(data, shared)
 }
 
 func routingGeoIPData() []byte {
@@ -137,5 +217,17 @@ func routingGeoIPData() []byte {
 	set = protowire.AppendBytes(set, cidr)
 	var data []byte
 	data = protowire.AppendTag(data, 1, protowire.BytesType)
-	return protowire.AppendBytes(data, set)
+	data = protowire.AppendBytes(data, set)
+	var privateCIDR []byte
+	privateCIDR = protowire.AppendTag(privateCIDR, 1, protowire.BytesType)
+	privateCIDR = protowire.AppendBytes(privateCIDR, []byte{10, 1, 0, 0})
+	privateCIDR = protowire.AppendTag(privateCIDR, 2, protowire.VarintType)
+	privateCIDR = protowire.AppendVarint(privateCIDR, 16)
+	var private []byte
+	private = protowire.AppendTag(private, 1, protowire.BytesType)
+	private = protowire.AppendString(private, "private")
+	private = protowire.AppendTag(private, 2, protowire.BytesType)
+	private = protowire.AppendBytes(private, privateCIDR)
+	data = protowire.AppendTag(data, 1, protowire.BytesType)
+	return protowire.AppendBytes(data, private)
 }

@@ -2,16 +2,21 @@
 package runtimecfg
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/yyysay/surge-geo-server/internal/rules"
@@ -100,11 +105,19 @@ func New(ctx context.Context, options Options) (*State, error) {
 		geositePath, geoipPath = candidate.geositePath, candidate.geoipPath
 	}
 	snapshot, err := state.buildSnapshot(config, mode, 1, geositePath, geoipPath)
+	if err != nil && candidate != nil {
+		syncErr = err
+		candidate = nil
+		snapshot, err = state.buildSnapshot(config, mode, 1, state.geositePath, state.geoipPath)
+	}
 	if err != nil {
 		if syncErr != nil {
 			return nil, fmt.Errorf("initial source sync: %v; load local data: %w", syncErr, err)
 		}
 		return nil, err
+	}
+	if syncErr != nil {
+		slog.Warn("initial source update failed; using validated local data", "error", syncErr)
 	}
 	if candidate != nil {
 		if err := state.commitSourceCandidate(candidate); err != nil {
@@ -141,6 +154,19 @@ func (s *State) applyLocked(ctx context.Context, config Config, persist bool, fi
 		return nil, err
 	}
 	current := s.current.Load()
+	if current != nil && config == current.Config {
+		slog.DebugContext(ctx, "runtime config unchanged", "revision", current.Revision)
+		if persist {
+			raw, err := s.persistConfig(config)
+			if err != nil {
+				return nil, err
+			}
+			s.configHash = sha256.Sum256(raw)
+		} else {
+			s.configHash = fileHash
+		}
+		return current, nil
+	}
 	geositePath, geoipPath := s.geositePath, s.geoipPath
 	changedGeoSite := current == nil || config.GeoSiteURL != current.Config.GeoSiteURL
 	changedGeoIP := current == nil || config.GeoIPURL != current.Config.GeoIPURL
@@ -175,18 +201,12 @@ func (s *State) applyLocked(ctx context.Context, config Config, persist bool, fi
 		return nil, err
 	}
 	if changedGeoSite {
-		if err := copyAtomic(geositePath, s.geositePath); err != nil {
-			return nil, err
-		}
-		if err := copyAtomic(geositePath+".meta.json", s.geositePath+".meta.json"); err != nil {
+		if err := commitSource(geositePath, s.geositePath, true); err != nil {
 			return nil, err
 		}
 	}
 	if changedGeoIP {
-		if err := copyAtomic(geoipPath, s.geoipPath); err != nil {
-			return nil, err
-		}
-		if err := copyAtomic(geoipPath+".meta.json", s.geoipPath+".meta.json"); err != nil {
+		if err := commitSource(geoipPath, s.geoipPath, true); err != nil {
 			return nil, err
 		}
 	}
@@ -200,6 +220,7 @@ func (s *State) applyLocked(ctx context.Context, config Config, persist bool, fi
 		s.configHash = fileHash
 	}
 	s.current.Store(candidate)
+	slog.InfoContext(ctx, "runtime config applied", "revision", candidate.Revision, "regex_mode", candidate.Config.RegexMode)
 	return candidate, nil
 }
 
@@ -219,10 +240,11 @@ func (s *State) ReloadConfig(ctx context.Context) (bool, error) {
 	if err := json.Unmarshal(raw, &config); err != nil {
 		return false, fmt.Errorf("read runtime config: %w", err)
 	}
+	before := s.current.Load()
 	if _, err := s.applyLocked(ctx, config, false, hash); err != nil {
 		return false, err
 	}
-	return true, nil
+	return s.current.Load() != before, nil
 }
 
 // Refresh updates upstream files and publishes a new dataset snapshot when needed.
@@ -236,7 +258,8 @@ func (s *State) Refresh(ctx context.Context) (bool, error) {
 	}
 	defer candidateSources.cleanup()
 	if !candidateSources.geositeChanged && !candidateSources.geoipChanged {
-		return false, nil
+		// A 200 with identical bytes (or a 304) may still update validators.
+		return false, s.commitSourceCandidate(candidateSources)
 	}
 	_, mode, err := normalizeConfig(current.Config)
 	if err != nil {
@@ -260,6 +283,7 @@ func (s *State) Refresh(ctx context.Context) (bool, error) {
 }
 
 func (s *State) buildSnapshot(config Config, mode rules.RegexMode, revision uint64, geositePath, geoipPath string) (*Snapshot, error) {
+	started := time.Now()
 	geositeData, err := os.ReadFile(geositePath)
 	if err != nil {
 		return nil, fmt.Errorf("read geosite data: %w", err)
@@ -279,6 +303,7 @@ func (s *State) buildSnapshot(config Config, mode rules.RegexMode, revision uint
 	if status.GeoIPSets == 0 {
 		return nil, fmt.Errorf("build dataset: geoip data contains no rule sets")
 	}
+	slog.Debug("dataset validated", "revision", revision, "geosite_bytes", len(geositeData), "geoip_bytes", len(geoipData), "duration", time.Since(started))
 	return &Snapshot{
 		Dataset:  dataset,
 		Config:   config,
@@ -319,15 +344,11 @@ func (s *State) prepareSourceCandidate(ctx context.Context, config Config) (*sou
 }
 
 func (s *State) commitSourceCandidate(candidate *sourceCandidate) error {
-	if candidate.geositeChanged {
-		if err := commitSource(candidate.geositePath, s.geositePath); err != nil {
-			return fmt.Errorf("commit geosite: %w", err)
-		}
+	if err := commitSource(candidate.geositePath, s.geositePath, candidate.geositeChanged); err != nil {
+		return fmt.Errorf("commit geosite: %w", err)
 	}
-	if candidate.geoipChanged {
-		if err := commitSource(candidate.geoipPath, s.geoipPath); err != nil {
-			return fmt.Errorf("commit geoip: %w", err)
-		}
+	if err := commitSource(candidate.geoipPath, s.geoipPath, candidate.geoipChanged); err != nil {
+		return fmt.Errorf("commit geoip: %w", err)
 	}
 	return nil
 }
@@ -337,20 +358,39 @@ func (candidate *sourceCandidate) cleanup() {
 }
 
 func stageSource(sourcePath, candidatePath string) error {
-	if err := copyAtomic(sourcePath, candidatePath); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := copyAtomic(sourcePath+".meta.json", candidatePath+".meta.json"); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, suffix := range []string{"", ".meta.json"} {
+		// Sync only replaces files by rename, so hard links safely avoid copying
+		// the entire cache before every conditional request.
+		err := os.Link(sourcePath+suffix, candidatePath+suffix)
+		if err == nil || os.IsNotExist(err) {
+			continue
+		}
+		if err := copyAtomic(sourcePath+suffix, candidatePath+suffix); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func commitSource(candidatePath, destinationPath string) error {
-	if err := copyAtomic(candidatePath, destinationPath); err != nil {
+func commitSource(candidatePath, destinationPath string, changed bool) error {
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
 		return err
 	}
-	return copyAtomic(candidatePath+".meta.json", destinationPath+".meta.json")
+	if changed {
+		if err := replaceSource(candidatePath, destinationPath); err != nil {
+			return err
+		}
+	}
+	return replaceSource(candidatePath+".meta.json", destinationPath+".meta.json")
+}
+
+func replaceSource(candidatePath, destinationPath string) error {
+	err := os.Rename(candidatePath, destinationPath)
+	if errors.Is(err, syscall.EXDEV) {
+		// sources/ can be a separate mount; still replace atomically there.
+		return copyAtomic(candidatePath, destinationPath)
+	}
+	return err
 }
 
 func (s *State) persistConfig(config Config) ([]byte, error) {
@@ -383,14 +423,19 @@ func normalizeConfig(config Config) (Config, rules.RegexMode, error) {
 }
 
 func copyAtomic(sourcePath, destinationPath string) error {
-	raw, err := os.ReadFile(sourcePath)
+	input, err := os.Open(sourcePath)
 	if err != nil {
 		return err
 	}
-	return writeAtomic(destinationPath, raw, 0o644)
+	defer input.Close()
+	return writeReaderAtomic(destinationPath, input, 0o644)
 }
 
 func writeAtomic(path string, raw []byte, mode os.FileMode) error {
+	return writeReaderAtomic(path, bytes.NewReader(raw), mode)
+}
+
+func writeReaderAtomic(path string, input io.Reader, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -400,7 +445,7 @@ func writeAtomic(path string, raw []byte, mode os.FileMode) error {
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
-	if _, err := tmp.Write(raw); err != nil {
+	if _, err := io.Copy(tmp, input); err != nil {
 		tmp.Close()
 		return err
 	}

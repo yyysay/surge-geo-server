@@ -2,8 +2,8 @@ package rules
 
 import (
 	"net/netip"
-	"regexp"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/yyysay/surge-geo-server/internal/model"
@@ -18,35 +18,21 @@ func testDataset() *Dataset {
 	}}
 	prefix := netip.MustParsePrefix("8.8.8.0/24")
 	d := &Dataset{
-		sites:    map[string]model.GeoSite{"example": site},
-		geoips:   map[string]model.GeoIP{"google": {Name: "google", CIDRs: []string{prefix.String()}}},
-		exact:    map[string][]DomainMatch{},
-		suffix:   map[string][]DomainMatch{},
-		prefixes: map[netip.Prefix][]IPMatch{prefix: {{RuleSet: "google", CIDR: prefix.String()}}},
+		sites:  map[string]model.GeoSite{"example": site},
+		geoips: map[string]model.GeoIP{"google": {Name: "google", CIDRs: []string{prefix.String()}}},
 	}
-	for _, rule := range site.Rules {
-		match := DomainMatch{RuleSet: site.Name, Kind: rule.Kind, Value: rule.Value, Attributes: rule.Attributes}
-		switch rule.Kind {
-		case model.DomainSuffix:
-			d.suffix[rule.Value] = append(d.suffix[rule.Value], match)
-		case model.DomainFull:
-			d.exact[rule.Value] = append(d.exact[rule.Value], match)
-		case model.DomainKeyword:
-			d.keywords = append(d.keywords, match)
-		case model.DomainRegex:
-			d.regexes = append(d.regexes, indexedRegex{match: match, re: mustRegex(rule.Value)})
-		}
-	}
+
 	return d
 }
 
 func TestRenderGeoSiteSkipsRegexAndSupportsFilter(t *testing.T) {
 	d := testDataset()
-	body, report, err := d.RenderGeoSite("example")
+	body, err := d.RenderGeoSite("example")
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := string(body)
+	report := body.Report
+	got := body.Body
 	for _, want := range []string{"DOMAIN-SUFFIX,example.com", "DOMAIN,exact.example.net", "DOMAIN-KEYWORD,keyword"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("rendered rules %q do not contain %q", got, want)
@@ -56,12 +42,12 @@ func TestRenderGeoSiteSkipsRegexAndSupportsFilter(t *testing.T) {
 		t.Fatalf("regex report = %+v, want one skipped rule", report)
 	}
 
-	filtered, _, err := d.RenderGeoSite("example@cn")
+	filtered, err := d.RenderGeoSite("example@cn")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(filtered) != "DOMAIN,exact.example.net\n" {
-		t.Fatalf("filtered rules = %q", filtered)
+	if filtered.Body != "DOMAIN,exact.example.net\n" {
+		t.Fatalf("filtered rules = %q", filtered.Body)
 	}
 }
 
@@ -92,15 +78,16 @@ func TestGeoSiteReturnsRawRulesAndSupportsFilter(t *testing.T) {
 func TestRenderGeoSiteBalancedDegradesRegex(t *testing.T) {
 	d := testDataset()
 	d.regexMode = RegexBalanced
-	body, report, err := d.RenderGeoSite("example")
+	body, err := d.RenderGeoSite("example")
 	if err != nil {
 		t.Fatal(err)
 	}
+	report := body.Report
 	if report.Degraded != 1 || report.Exact != 0 || report.Skipped != 0 {
 		t.Fatalf("regex report = %+v, want one degraded rule", report)
 	}
-	if !strings.Contains(string(body), "DOMAIN-WILDCARD,api[0-9]*.example.org") {
-		t.Fatalf("rendered rules %q do not contain balanced regex fallback", body)
+	if !strings.Contains(body.Body, "DOMAIN-WILDCARD,api[0-9]*.example.org") {
+		t.Fatalf("rendered rules %q do not contain balanced regex fallback", body.Body)
 	}
 }
 
@@ -133,8 +120,8 @@ func TestRenderAndLookupGeoIP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != "IP-CIDR,8.8.8.0/24,no-resolve\n" {
-		t.Fatalf("geoip rules = %q", body)
+	if body.Body != "IP-CIDR,8.8.8.0/24,no-resolve\n" {
+		t.Fatalf("geoip rules = %q", body.Body)
 	}
 	matches, err := d.LookupIP("8.8.8.8")
 	if err != nil {
@@ -145,42 +132,66 @@ func TestRenderAndLookupGeoIP(t *testing.T) {
 	}
 }
 
-func TestRenderedRuleSetsAreCachedWithoutSharingMutableBytes(t *testing.T) {
+func TestConcurrentRenderAndLookup(t *testing.T) {
 	d := testDataset()
-
-	geositeBody, _, err := d.RenderGeoSite("EXAMPLE")
-	if err != nil {
-		t.Fatal(err)
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			site, err := d.RenderGeoSite("EXAMPLE")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			cached, err := d.RenderGeoSite("example")
+			if err != nil || cached != site || cached.ETag == "" {
+				t.Errorf("cached geosite = %+v, err = %v", cached, err)
+			}
+			ip, err := d.RenderGeoIP("GOOGLE")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			cachedIP, err := d.RenderGeoIP("google")
+			if err != nil || cachedIP != ip || cachedIP.ETag == "" {
+				t.Errorf("cached geoip = %+v, err = %v", cachedIP, err)
+			}
+			matches, err := d.LookupDomain("api42.example.org")
+			if err != nil || len(matches) != 1 {
+				t.Errorf("domain matches = %v, err = %v", matches, err)
+			}
+			ips, err := d.LookupIP("8.8.8.8")
+			if err != nil || len(ips) != 1 {
+				t.Errorf("IP matches = %v, err = %v", ips, err)
+			}
+		})
 	}
-	if _, ok := d.geosites.Load("example"); !ok {
-		t.Fatal("geosite render was not cached")
-	}
-	geositeBody[0] = 'X'
-	cachedGeoSiteBody, _, err := d.RenderGeoSite("example")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cachedGeoSiteBody[0] == 'X' {
-		t.Fatal("caller mutated the cached geosite response")
-	}
-
-	geoipBody, err := d.RenderGeoIP("GOOGLE")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := d.geoipsOut.Load("google"); !ok {
-		t.Fatal("geoip render was not cached")
-	}
-	geoipBody[0] = 'X'
-	cachedGeoIPBody, err := d.RenderGeoIP("google")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cachedGeoIPBody[0] == 'X' {
-		t.Fatal("caller mutated the cached geoip response")
-	}
+	wg.Wait()
 }
 
-func mustRegex(pattern string) *regexp.Regexp {
-	return regexp.MustCompile(pattern)
+func TestSubscriptionsDoNotBuildLookupIndexes(t *testing.T) {
+	d := testDataset()
+	if _, err := d.RenderGeoSite("example"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.RenderGeoIP("google"); err != nil {
+		t.Fatal(err)
+	}
+	if d.exact != nil || d.suffix != nil || d.prefixes != nil || len(d.regexes) != 0 {
+		t.Fatal("subscription rendering built lookup indexes")
+	}
+	if _, err := d.RenderGeoSite("example@typo"); err == nil {
+		t.Fatal("unknown filter was silently rendered as an empty subscription")
+	}
+	if _, err := d.LookupDomain("example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if d.exact == nil || d.prefixes != nil {
+		t.Fatal("domain lookup must only build domain indexes")
+	}
+	if _, err := d.LookupIP("8.8.8.8"); err != nil {
+		t.Fatal(err)
+	}
+	if d.prefixes == nil {
+		t.Fatal("IP lookup did not build its index")
+	}
 }

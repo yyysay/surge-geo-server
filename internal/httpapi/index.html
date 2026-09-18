@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Surge Geo</title>
+  <title>Surge Geo Server</title>
   <style>
     :root {
       color-scheme:light dark;
@@ -46,8 +46,13 @@
     .result summary { cursor:pointer; }
     .trace { margin-top:7px; border-top:1px solid var(--line); }
     .trace-row { display:grid; grid-template-columns:1fr auto; gap:8px; padding:7px 0; border-bottom:1px solid var(--line); font:12px/1.45 var(--mono); }
-    .trace-row.skip { opacity:.48; }
     .trace-row.hit .state { color:var(--accent); }
+    .trace-row.conflict .state { color:var(--danger); }
+    .trace-row > :first-child { min-width:0; overflow-wrap:anywhere; }
+    .trace-row .state { text-align:right; }
+    .evidence { margin-top:4px; color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+    .diagnosis { margin:8px 0 0; color:var(--muted); font-size:12px; }
+    .diagnosis.conflict { color:var(--danger); }
     .state { font-family:ui-sans-serif,system-ui,sans-serif; }
     .geo-list { max-height:190px; overflow:auto; margin:7px 0 0; padding:0; list-style:none; border-top:1px solid var(--line); font:12px/1.45 var(--mono); }
     .geo-list li { padding:6px 0; border-bottom:1px solid var(--line); }
@@ -67,6 +72,8 @@
       header { padding-top:24px; }
       .config-grid { grid-template-columns:1fr; }
       .wide { grid-column:auto; }
+      .trace-row { grid-template-columns:minmax(0,1fr); }
+      .trace-row .state { text-align:left; }
     }
   </style>
 </head>
@@ -134,6 +141,7 @@
     const localRulesKey = 'surge-geo-rules-v1';
     const defaultRules = 'GEOSITE,google,手动选择\nGEOIP,CN,DIRECT,no-resolve';
     let configLoaded = false;
+    let queryVersion = 0;
 
     function node(tag, className, text) {
       const element = document.createElement(tag);
@@ -152,11 +160,18 @@
       container.className = 'result visible error';
       container.textContent = error.message;
     }
+    function clearDecision() {
+      queryVersion++;
+      queryResult.className = 'result';
+      queryResult.replaceChildren();
+    }
 
     queryForm.addEventListener('submit', async event => {
       event.preventDefault();
       const value = new FormData(queryForm).get('value').trim();
+      const rules = rulesEditor.value;
       if (!value) return;
+      const version = ++queryVersion;
       const button = queryForm.querySelector('button');
       button.disabled = true;
       queryResult.className = 'result visible';
@@ -165,12 +180,13 @@
         const response = await fetch('/query', {
           method:'POST',
           headers:{'Content-Type':'application/x-www-form-urlencoded'},
-          body:new URLSearchParams({value,rules:rulesEditor.value})
+          body:new URLSearchParams({value,rules})
         });
         const data = await response.json();
+        if (version !== queryVersion) return;
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         renderDecision(data);
-      } catch (error) { showError(queryResult,error); }
+      } catch (error) { if (version === queryVersion) showError(queryResult,error); }
       finally { button.disabled = false; }
     });
 
@@ -179,19 +195,54 @@
       queryResult.replaceChildren();
       const outcome = node('div','outcome');
       outcome.append(node('strong','policy',data.policy || '无匹配'));
+      if (data.matched) outcome.append(node('span','meta',`第 ${data.matched.rule.line} 行生效`));
       queryResult.append(outcome);
 
-      const traceDetails = node('details');
-      traceDetails.append(node('summary','',`规则匹配 (${(data.trace || []).length})`));
-      const trace = node('div','trace');
-      for (const item of data.trace || []) {
-        const row = node('div',`trace-row${item.matched ? ' hit' : item.applicable ? '' : ' skip'}`);
-        row.append(node('span','',ruleText(item.rule)));
-        row.append(node('span','state',item.matched ? '命中' : item.applicable ? '未命中' : '跳过'));
-        trace.append(row);
+      const diagnostics = data.diagnostics || {};
+      const shadowed = diagnostics.shadowed_rules || 0;
+      const conflicting = diagnostics.conflicting_rules || 0;
+      const matchedTrace = (data.trace || []).filter(item => item.matched);
+      queryResult.append(node('p',`diagnosis${conflicting ? ' conflict' : ''}`,
+        shadowed ? `后续 ${shadowed} 条匹配被遮蔽，其中 ${conflicting} 条策略不同。`
+          : matchedTrace.length ? '本次查询没有被遮蔽的后续匹配。' : '本次查询没有命中当前规则。'));
+      queryResult.append(node('p','diagnosis','按原始 DAT 语义诊断；域名查询不解析 DNS，正则降级后的 Surge 命中可能不同。'));
+
+      if (matchedTrace.length) {
+        const traceDetails = node('details');
+        traceDetails.open = shadowed > 0;
+        traceDetails.append(node('summary','',`规则顺序诊断 · ${matchedTrace.length} 条命中`));
+        const trace = node('div','trace');
+        for (const item of matchedTrace) {
+          const row = node('div',`trace-row${item.policy_conflict ? ' conflict' : item.effective ? ' hit' : ''}`);
+          const content = node('div');
+          content.append(node('span','',`${item.rule.line}. ${ruleText(item.rule)}`));
+          if (item.detail) content.append(node('div','evidence',item.detail));
+          row.append(content);
+          const state = item.effective ? '生效'
+            : `被第 ${item.shadowed_by} 行遮蔽 · ${item.policy_conflict ? '策略不同' : '相同策略'}`;
+          row.append(node('span','state',state));
+          trace.append(row);
+        }
+        traceDetails.append(trace);
+        queryResult.append(traceDetails);
       }
-      traceDetails.append(trace);
-      queryResult.append(traceDetails);
+
+      const overlaps = diagnostics.overlapping_sets || [];
+      if (overlaps.length) {
+        const overlapDetails = node('details');
+        overlapDetails.open = true;
+        overlapDetails.append(node('summary','',`本次集合重叠 (${overlaps.length})`));
+        overlapDetails.append(node('p','diagnosis','以下已配置集合都包含本次查询；这不代表整个集合互相包含。'));
+        const overlapList = node('ul','geo-list');
+        for (const overlap of overlaps) {
+          const item = node('li');
+          item.append(node('span','',`${overlap.type}/${overlap.name} · 第 ${overlap.lines.join('、')} 行`));
+          item.append(node('div','evidence',overlap.detail));
+          overlapList.append(item);
+        }
+        overlapDetails.append(overlapList);
+        queryResult.append(overlapDetails);
+      }
 
       const matches = data.geo_matches || [];
       const geoDetails = node('details');
@@ -226,6 +277,7 @@
         const data = await response.json();
         if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
         configStatus.textContent = '已应用';
+        clearDecision();
       } catch (error) {
         configStatus.className = 'status bad';
         configStatus.textContent = error.message;
@@ -243,6 +295,7 @@
       saveStatus.className = 'status';
       saveStatus.textContent = `${localRuleLines().length} 条 · 本地`;
       exportPanel.hidden = true;
+      clearDecision();
     }
     function parseCSVLine(line) {
       const fields = []; let field = '', quoted = false;
@@ -281,6 +334,7 @@
     }
 
     rulesEditor.addEventListener('input',saveLocalRules);
+    queryForm.elements.value.addEventListener('input',clearDecision);
     exportRulesButton.addEventListener('click',() => {
       try {
         surgeOutput.value = surgeRules();

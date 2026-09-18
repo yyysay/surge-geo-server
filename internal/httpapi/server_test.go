@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yyysay/surge-geo-server/internal/model"
+	"github.com/yyysay/surge-geo-server/internal/routing"
 	"github.com/yyysay/surge-geo-server/internal/rules"
 	"github.com/yyysay/surge-geo-server/internal/runtimecfg"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -146,6 +147,37 @@ func TestUIQueryReturnsFirstPolicyAndRulesAPIIsAbsent(t *testing.T) {
 	}
 }
 
+func TestQueryReturnsShadowingAndSetOverlap(t *testing.T) {
+	data := append(testGeoSiteData(), bytes.ReplaceAll(testGeoSiteData(), []byte("EXAMPLE"), []byte("ANOTHER"))...)
+	dataset, err := rules.New(data, nil, rules.RegexStrict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeRuntime{snapshot: &runtimecfg.Snapshot{Dataset: dataset, Revision: 1}}
+	handler := New(runtime, "")
+	form := url.Values{"value": {"www.example.com"}, "rules": {"# order matters\nGEOSITE,example,Proxy\nGEOSITE,another,DIRECT\nGEOSITE,EXAMPLE,Proxy"}}
+	request := httptest.NewRequest(http.MethodPost, "/query", strings.NewReader(form.Encode()))
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var decision routing.Decision
+	if err := json.Unmarshal(recorder.Body.Bytes(), &decision); err != nil {
+		t.Fatal(err)
+	}
+	if decision.Policy != "Proxy" || len(decision.Trace) != 3 || decision.Trace[1].ShadowedBy != 2 || !decision.Trace[1].PolicyConflict || decision.Trace[2].PolicyConflict {
+		t.Fatalf("incorrect shadowing: %+v", decision)
+	}
+	if decision.Diagnostics.ShadowedRules != 2 || decision.Diagnostics.ConflictingRules != 1 || len(decision.Diagnostics.OverlappingSets) != 2 {
+		t.Fatalf("incorrect diagnostics: %+v", decision.Diagnostics)
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("query response may be cached")
+	}
+}
+
 func TestRawGeoSiteEndpoint(t *testing.T) {
 	dataset, err := rules.New(testGeoSiteData(), nil, rules.RegexStrict)
 	if err != nil {
@@ -165,6 +197,38 @@ func TestRawGeoSiteEndpoint(t *testing.T) {
 	}
 	if site.Name != "example" || len(site.Rules) != 1 || site.Rules[0].Kind != model.DomainSuffix || site.Rules[0].Value != "example.com" {
 		t.Fatalf("site = %#v", site)
+	}
+}
+
+func TestSubscriptionConditionalRequests(t *testing.T) {
+	handler := New(testRuntime(t, runtimecfg.Config{RegexMode: "strict"}), "")
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, httptest.NewRequest(http.MethodGet, "/geosite/example", nil))
+	etag := first.Header().Get("ETag")
+	if first.Code != http.StatusOK || etag == "" || first.Body.String() != "DOMAIN-SUFFIX,example.com\n" {
+		t.Fatalf("initial response = %d %v %q", first.Code, first.Header(), first.Body.String())
+	}
+	for _, validator := range []string{etag, "W/" + etag, `"other", W/` + etag, "*"} {
+		request := httptest.NewRequest(http.MethodGet, "/geosite/example", nil)
+		request.Header.Set("If-None-Match", validator)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusNotModified || recorder.Body.Len() != 0 {
+			t.Errorf("validator %q: status = %d, body = %q", validator, recorder.Code, recorder.Body.String())
+		}
+		if recorder.Header().Get("ETag") != etag || recorder.Header().Get("Cache-Control") != first.Header().Get("Cache-Control") {
+			t.Errorf("304 lost cache headers: %v", recorder.Header())
+		}
+	}
+	head := httptest.NewRecorder()
+	handler.ServeHTTP(head, httptest.NewRequest(http.MethodHead, "/geosite/example", nil))
+	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("ETag") != etag {
+		t.Fatalf("HEAD = %d %v %q", head.Code, head.Header(), head.Body.String())
+	}
+	unknown := httptest.NewRecorder()
+	handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodGet, "/geosite/example@typo", nil))
+	if unknown.Code != http.StatusNotFound {
+		t.Fatalf("unknown filter status = %d", unknown.Code)
 	}
 }
 

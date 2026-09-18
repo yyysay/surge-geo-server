@@ -3,6 +3,7 @@ package rules
 import (
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"regexp"
 	"sort"
@@ -45,23 +46,33 @@ type indexedRegex struct {
 	re    *regexp.Regexp
 }
 
-type renderedGeoSite struct {
-	body   string
-	report RegexReport
+// RuleSet holds immutable output and its precomputed HTTP validator.
+// Returning strings avoids copying the entire cached response on every request.
+type RuleSet struct {
+	Body   string
+	ETag   string
+	Report RegexReport
+}
+
+func newRuleSet(body string, report RegexReport) RuleSet {
+	hash := sha256.Sum256([]byte(body))
+	return RuleSet{Body: body, ETag: fmt.Sprintf("\"%x\"", hash[:12]), Report: report}
 }
 
 type Dataset struct {
-	sites     map[string]model.GeoSite
-	geoips    map[string]model.GeoIP
-	exact     map[string][]DomainMatch
-	suffix    map[string][]DomainMatch
-	keywords  []DomainMatch
-	regexes   []indexedRegex
-	prefixes  map[netip.Prefix][]IPMatch
-	status    Status
-	regexMode RegexMode
-	geosites  sync.Map
-	geoipsOut sync.Map
+	domainOnce sync.Once
+	ipOnce     sync.Once
+	sites      map[string]model.GeoSite
+	geoips     map[string]model.GeoIP
+	exact      map[string][]DomainMatch
+	suffix     map[string][]DomainMatch
+	keywords   []DomainMatch
+	regexes    []indexedRegex
+	prefixes   map[netip.Prefix][]IPMatch
+	status     Status
+	regexMode  RegexMode
+	geosites   sync.Map
+	geoipsOut  sync.Map
 }
 
 func New(geositeData, geoipData []byte, regexMode RegexMode) (*Dataset, error) {
@@ -80,39 +91,13 @@ func New(geositeData, geoipData []byte, regexMode RegexMode) (*Dataset, error) {
 	d := &Dataset{
 		sites:     make(map[string]model.GeoSite, len(sites)),
 		geoips:    make(map[string]model.GeoIP, len(geoips)),
-		exact:     make(map[string][]DomainMatch),
-		suffix:    make(map[string][]DomainMatch),
-		prefixes:  make(map[netip.Prefix][]IPMatch),
 		regexMode: regexMode,
 	}
 	for _, site := range sites {
 		d.sites[site.Name] = site
-		for _, rule := range site.Rules {
-			match := DomainMatch{RuleSet: site.Name, Kind: rule.Kind, Value: rule.Value, Attributes: rule.Attributes}
-			switch rule.Kind {
-			case model.DomainFull:
-				d.exact[rule.Value] = append(d.exact[rule.Value], match)
-			case model.DomainSuffix:
-				d.suffix[rule.Value] = append(d.suffix[rule.Value], match)
-			case model.DomainKeyword:
-				d.keywords = append(d.keywords, match)
-			case model.DomainRegex:
-				if re, compileErr := regexp.Compile(rule.Value); compileErr == nil {
-					d.regexes = append(d.regexes, indexedRegex{match: match, re: re})
-				}
-			}
-		}
 	}
 	for _, set := range geoips {
 		d.geoips[set.Name] = set
-		for _, cidr := range set.CIDRs {
-			prefix, parseErr := netip.ParsePrefix(cidr)
-			if parseErr != nil {
-				continue
-			}
-			prefix = prefix.Masked()
-			d.prefixes[prefix] = append(d.prefixes[prefix], IPMatch{RuleSet: set.Name, CIDR: prefix.String()})
-		}
 	}
 	geositeHash := sha256.Sum256(geositeData)
 	geoipHash := sha256.Sum256(geoipData)
@@ -124,6 +109,57 @@ func New(geositeData, geoipData []byte, regexMode RegexMode) (*Dataset, error) {
 		GeoIPHash:   fmt.Sprintf("%x", geoipHash[:8]),
 	}
 	return d, nil
+}
+
+// Subscription rendering needs only the raw sets. Lookup indexes are independent
+// and initialized once, only when the corresponding query API is used.
+func (d *Dataset) indexDomains() {
+	started := time.Now()
+	defer func() {
+		slog.Debug("domain lookup index built", "exact", len(d.exact), "suffix", len(d.suffix), "regex", len(d.regexes), "duration", time.Since(started))
+	}()
+	d.exact = make(map[string][]DomainMatch)
+	d.suffix = make(map[string][]DomainMatch)
+	compiled := make(map[string]*regexp.Regexp)
+	for _, site := range d.sites {
+		for _, rule := range site.Rules {
+			match := DomainMatch{RuleSet: site.Name, Kind: rule.Kind, Value: rule.Value, Attributes: rule.Attributes}
+			switch rule.Kind {
+			case model.DomainFull:
+				d.exact[rule.Value] = append(d.exact[rule.Value], match)
+			case model.DomainSuffix:
+				d.suffix[rule.Value] = append(d.suffix[rule.Value], match)
+			case model.DomainKeyword:
+				d.keywords = append(d.keywords, match)
+			case model.DomainRegex:
+				re, exists := compiled[rule.Value]
+				if !exists {
+					re, _ = regexp.Compile(rule.Value)
+					compiled[rule.Value] = re
+				}
+				if re != nil {
+					d.regexes = append(d.regexes, indexedRegex{match: match, re: re})
+				}
+			}
+		}
+	}
+}
+
+func (d *Dataset) indexIPs() {
+	started := time.Now()
+	defer func() {
+		slog.Debug("IP lookup index built", "prefixes", len(d.prefixes), "duration", time.Since(started))
+	}()
+	d.prefixes = make(map[netip.Prefix][]IPMatch)
+	for _, set := range d.geoips {
+		for _, cidr := range set.CIDRs {
+			prefix, err := netip.ParsePrefix(cidr)
+			if err == nil {
+				prefix = prefix.Masked()
+				d.prefixes[prefix] = append(d.prefixes[prefix], IPMatch{RuleSet: set.Name, CIDR: cidr})
+			}
+		}
+	}
 }
 
 func (d *Dataset) Status() Status { return d.status }
@@ -195,19 +231,21 @@ func (d *Dataset) HasGeoIP(name string) bool {
 	return ok
 }
 
-func (d *Dataset) RenderGeoSite(name string) ([]byte, RegexReport, error) {
+func (d *Dataset) RenderGeoSite(name string) (RuleSet, error) {
 	setName, filter := splitFilter(strings.ToLower(name))
 	cacheKey := setName
 	if filter != "" {
 		cacheKey += "@" + filter
 	}
 	if cached, ok := d.geosites.Load(cacheKey); ok {
-		rendered := cached.(renderedGeoSite)
-		return []byte(rendered.body), rendered.report, nil
+		return cached.(RuleSet), nil
 	}
 	site, ok := d.sites[setName]
 	if !ok {
-		return nil, RegexReport{}, fmt.Errorf("unknown geosite rule set %q", setName)
+		return RuleSet{}, fmt.Errorf("unknown geosite rule set %q", setName)
+	}
+	if filter != "" && !d.HasGeoSite(cacheKey) {
+		return RuleSet{}, fmt.Errorf("unknown geosite filter %q", filter)
 	}
 	lines := make([]string, 0, len(site.Rules))
 	seen := make(map[string]struct{}, len(site.Rules))
@@ -248,20 +286,19 @@ func (d *Dataset) RenderGeoSite(name string) ([]byte, RegexReport, error) {
 		}
 	}
 	body := strings.Join(lines, "\n") + "\n"
-	if len(lines) > 0 {
-		d.geosites.Store(cacheKey, renderedGeoSite{body: body, report: report})
-	}
-	return []byte(body), report, nil
+	rendered := newRuleSet(body, report)
+	cached, _ := d.geosites.LoadOrStore(cacheKey, rendered)
+	return cached.(RuleSet), nil
 }
 
-func (d *Dataset) RenderGeoIP(name string) ([]byte, error) {
+func (d *Dataset) RenderGeoIP(name string) (RuleSet, error) {
 	cacheKey := strings.ToLower(name)
 	if cached, ok := d.geoipsOut.Load(cacheKey); ok {
-		return []byte(cached.(string)), nil
+		return cached.(RuleSet), nil
 	}
 	set, ok := d.geoips[cacheKey]
 	if !ok {
-		return nil, fmt.Errorf("unknown geoip rule set %q", name)
+		return RuleSet{}, fmt.Errorf("unknown geoip rule set %q", name)
 	}
 	lines := make([]string, 0, len(set.CIDRs))
 	for _, cidr := range set.CIDRs {
@@ -272,8 +309,8 @@ func (d *Dataset) RenderGeoIP(name string) ([]byte, error) {
 		lines = append(lines, kind+","+cidr+",no-resolve")
 	}
 	body := strings.Join(lines, "\n") + "\n"
-	d.geoipsOut.Store(cacheKey, body)
-	return []byte(body), nil
+	cached, _ := d.geoipsOut.LoadOrStore(cacheKey, newRuleSet(body, RegexReport{}))
+	return cached.(RuleSet), nil
 }
 
 func (d *Dataset) LookupDomain(value string) ([]DomainMatch, error) {
@@ -281,10 +318,11 @@ func (d *Dataset) LookupDomain(value string) ([]DomainMatch, error) {
 	if domain == "" {
 		return nil, fmt.Errorf("invalid domain")
 	}
+	d.domainOnce.Do(d.indexDomains)
 	matches := append([]DomainMatch(nil), d.exact[domain]...)
-	labels := strings.Split(domain, ".")
-	for i := range labels {
-		matches = append(matches, d.suffix[strings.Join(labels[i:], ".")]...)
+	for suffix := domain; suffix != ""; {
+		matches = append(matches, d.suffix[suffix]...)
+		_, suffix, _ = strings.Cut(suffix, ".")
 	}
 	for _, match := range d.keywords {
 		if strings.Contains(domain, match.Value) {
@@ -304,6 +342,7 @@ func (d *Dataset) LookupIP(value string) ([]IPMatch, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid IP address")
 	}
+	d.ipOnce.Do(d.indexIPs)
 	maxBits := 128
 	if addr.Is4() {
 		maxBits = 32
@@ -325,11 +364,8 @@ func (d *Dataset) LookupIP(value string) ([]IPMatch, error) {
 }
 
 func splitFilter(name string) (string, string) {
-	parts := strings.SplitN(name, "@", 2)
-	if len(parts) == 2 {
-		return parts[0], parts[1]
-	}
-	return name, ""
+	set, filter, _ := strings.Cut(name, "@")
+	return set, filter
 }
 
 func contains(values []string, target string) bool {

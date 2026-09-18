@@ -10,4 +10,5 @@ services:
       - ./data:/data
     environment:
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     restart: unless-stopped

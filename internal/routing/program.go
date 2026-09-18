@@ -39,19 +39,39 @@ type Program struct {
 }
 
 type Evaluation struct {
-	Rule       Rule   `json:"rule"`
-	Applicable bool   `json:"applicable"`
-	Matched    bool   `json:"matched"`
-	Detail     string `json:"detail,omitempty"`
+	Rule           Rule   `json:"rule"`
+	Applicable     bool   `json:"applicable"`
+	Matched        bool   `json:"matched"`
+	Detail         string `json:"detail,omitempty"`
+	Effective      bool   `json:"effective"`
+	ShadowedBy     int    `json:"shadowed_by,omitempty"`
+	PolicyConflict bool   `json:"policy_conflict,omitempty"`
+}
+
+// SetOverlap is a configured set containing this query, not a claim that whole
+// sets are equivalent or that one set contains another.
+type SetOverlap struct {
+	Type   string `json:"type"`
+	Name   string `json:"name"`
+	Lines  []int  `json:"lines"`
+	Detail string `json:"detail"`
+}
+
+type Diagnostics struct {
+	MatchedRules     int          `json:"matched_rules"`
+	ShadowedRules    int          `json:"shadowed_rules"`
+	ConflictingRules int          `json:"conflicting_rules"`
+	OverlappingSets  []SetOverlap `json:"overlapping_sets"`
 }
 
 type Decision struct {
-	Query      string       `json:"query"`
-	Kind       string       `json:"kind"`
-	Policy     string       `json:"policy,omitempty"`
-	Matched    *Evaluation  `json:"matched,omitempty"`
-	Trace      []Evaluation `json:"trace"`
-	GeoMatches any          `json:"geo_matches,omitempty"`
+	Query       string       `json:"query"`
+	Kind        string       `json:"kind"`
+	Policy      string       `json:"policy,omitempty"`
+	Matched     *Evaluation  `json:"matched,omitempty"`
+	Trace       []Evaluation `json:"trace"`
+	GeoMatches  any          `json:"geo_matches,omitempty"`
+	Diagnostics Diagnostics  `json:"diagnostics"`
 }
 
 func Parse(text string) (*Program, error) {
@@ -201,7 +221,8 @@ func (p *Program) Validate(dataset *rules.Dataset) error {
 	return nil
 }
 
-// Evaluate walks the program from top to bottom and stops at its first match.
+// Evaluate preserves first-match routing, but evaluates every rule to expose
+// later matches shadowed by that winner. Diagnostics only describe this query.
 func (p *Program) Evaluate(value string, dataset *rules.Dataset) (Decision, error) {
 	query := strings.TrimSpace(value)
 	decision := Decision{Query: query, Trace: make([]Evaluation, 0, len(p.Rules))}
@@ -231,15 +252,48 @@ func (p *Program) Evaluate(value string, dataset *rules.Dataset) (Decision, erro
 		decision.GeoMatches = matches
 	}
 
+	setPositions := make(map[string]int)
+	sets := make([]SetOverlap, 0)
 	for _, rule := range p.Rules {
 		evaluation := evaluateRule(rule, decision.Kind, domain, addr, domainMatches, ipMatches)
-		decision.Trace = append(decision.Trace, evaluation)
 		if evaluation.Matched {
-			decision.Policy = rule.Policy
-			matched := evaluation
-			decision.Matched = &matched
-			break
+			decision.Diagnostics.MatchedRules++
+			if decision.Matched == nil {
+				evaluation.Effective = true
+				decision.Policy = rule.Policy
+				matched := evaluation
+				decision.Matched = &matched
+			} else {
+				evaluation.ShadowedBy = decision.Matched.Rule.Line
+				evaluation.PolicyConflict = rule.Policy != decision.Policy
+				decision.Diagnostics.ShadowedRules++
+				if evaluation.PolicyConflict {
+					decision.Diagnostics.ConflictingRules++
+				}
+			}
+			if rule.setType != "" {
+				name := rule.setName
+				if rule.setType == "geosite" {
+					set, filter := splitFilter(name)
+					name = set
+					if filter != "" {
+						name += "@" + filter
+					}
+				}
+				key := rule.setType + "/" + name
+				if position, exists := setPositions[key]; exists {
+					sets[position].Lines = append(sets[position].Lines, rule.Line)
+				} else {
+					setPositions[key] = len(sets)
+					sets = append(sets, SetOverlap{Type: rule.setType, Name: name, Lines: []int{rule.Line}, Detail: evaluation.Detail})
+				}
+			}
 		}
+		decision.Trace = append(decision.Trace, evaluation)
+	}
+	decision.Diagnostics.OverlappingSets = make([]SetOverlap, 0)
+	if len(sets) > 1 {
+		decision.Diagnostics.OverlappingSets = sets
 	}
 	return decision, nil
 }

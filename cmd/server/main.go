@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,7 +31,14 @@ func main() {
 	configFile := flag.String("config-file", env("RUNTIME_CONFIG", ""), "runtime JSON config path (defaults to DATA_DIR/runtime.json)")
 	configWatch := flag.Duration("config-watch", envDuration("CONFIG_WATCH_INTERVAL", 2*time.Second), "runtime config file watch interval")
 	adminToken := flag.String("admin-token", env("ADMIN_TOKEN", ""), "bearer token for remote hot reload")
+	logLevel := flag.String("log-level", env("LOG_LEVEL", "info"), "log verbosity (info or debug)")
 	flag.Parse()
+	logger, err := newLogger(*logLevel, os.Stderr)
+	if err != nil {
+		slog.Error("invalid logging configuration", "error", err)
+		os.Exit(2)
+	}
+	slog.SetDefault(logger)
 	if *refresh <= 0 || *configWatch <= 0 {
 		slog.Error("refresh and config-watch intervals must be positive")
 		os.Exit(2)
@@ -66,7 +74,7 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-refreshTicker.C:
-				slog.Info("upstream refresh started")
+				slog.Debug("upstream refresh started")
 				changed, err := state.Refresh(ctx)
 				if err != nil {
 					slog.Error("upstream refresh rejected; keeping current data", "error", err)
@@ -75,7 +83,7 @@ func main() {
 					status := loaded.Dataset.Status()
 					slog.Info("upstream refresh completed", "result", "updated", "revision", loaded.Revision, "geosite_sets", status.GeoSiteSets, "geoip_sets", status.GeoIPSets)
 				} else {
-					slog.Info("upstream refresh completed", "result", "unchanged", "revision", state.Snapshot().Revision)
+					slog.Debug("upstream refresh completed", "result", "unchanged", "revision", state.Snapshot().Revision)
 				}
 			case <-configTicker.C:
 				changed, err := state.ReloadConfig(ctx)
@@ -91,7 +99,7 @@ func main() {
 	handler := httpapi.New(state, *adminToken)
 	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute}
 	go func() {
-		slog.Info("server started", "listen", *listen)
+		slog.Info("server started", "listen", *listen, "log_level", strings.ToLower(strings.TrimSpace(*logLevel)))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed", "error", err)
 			cancel()
@@ -101,7 +109,11 @@ func main() {
 	<-ctx.Done()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
-	_ = server.Shutdown(shutdownCtx)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.Error("server shutdown failed", "error", err)
+	} else {
+		slog.Info("server stopped")
+	}
 }
 
 func env(name, fallback string) string {

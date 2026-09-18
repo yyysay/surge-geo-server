@@ -97,7 +97,7 @@ func parseCIDR(data []byte) (string, error) {
 				return "", fmt.Errorf("cidr: invalid address")
 			}
 			data = data[consumed:]
-			raw = append([]byte(nil), value...)
+			raw = value
 		case num == 2 && typ == protowire.VarintType:
 			value, consumed := protowire.ConsumeVarint(data)
 			if consumed < 0 {

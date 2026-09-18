@@ -18,10 +18,13 @@
 - 使用可选的管理 Token 保护远程配置热载入
 - 查询域名匹配的 Geosite 集合和具体规则
 - 查询 IP 匹配的 GeoIP 集合和 CIDR
-- 使用 `ETag` 和 `Last-Modified` 检查上游更新
+- 查询时诊断规则顺序：显示被首条命中遮蔽的后续匹配、策略冲突和已配置集合重叠
+- 支持 `info` / `debug` 后台日志级别
+- 优先使用 `ETag`，缺失时使用 `Last-Modified` 检查上游更新；下载后用 SHA-256 判断内容变化
 - 下载到临时候选目录，非空且完整解析后才原子替换磁盘 DAT
 - 将下载的数据持久化到 `/data`
 - 同一数据版本的规则首次生成后保存在内存中复用
+- 归属查询索引按需建立，仅订阅规则时不构建全量查询索引
 - 为规则响应提供 `ETag` 和缓存响应头
 - 查询页面直接嵌入 Go 可执行文件，无需单独部署前端
 - 页面采用轻量单栏布局，可查询策略、编辑规则和修改运行数据源
@@ -118,10 +121,26 @@ mkdir -p data/sources
 不要求预先存在 `.meta.json`。网络恢复后，定时刷新仍会根据配置的数据源 URL 更新文件
 并维护相邻的 `.meta.json`；网页规则保存在当前浏览器，不进入 `data` 目录。
 
-定时刷新不会直接覆盖上述 DAT。服务先把现有缓存和条件请求元数据复制到
-`data/.source-refresh-*` 候选目录，再下载更新；HTTP 空响应、无法解析的 DAT、或解析后
+定时刷新不会直接覆盖上述 DAT。服务先通过硬链接把现有缓存和条件请求元数据放入
+`data/.source-refresh-*` 候选目录（文件系统不支持时回退为流式复制），再下载更新；
+下载边写临时文件边计算 SHA-256，不把整个响应额外读入内存。HTTP 空响应、无法解析的 DAT、或解析后
 不包含任何规则集合都会让本次刷新失败。只有 Geosite 和 GeoIP 候选都验证成功后，
-正式 DAT 和运行快照才会更新，失败时继续使用上一版。
+才逐文件原子替换变化的 DAT，并发布新的运行快照；下载或校验失败时继续使用上一版。
+启动时如果上游返回损坏的数据，也会尝试使用能够通过校验的本地 DAT。
+
+### 更新检查是否可靠
+
+`ETag` / `Last-Modified` 是标准 HTTP 条件请求机制，用来避免下载未变化的文件，
+不是文件内容校验或实时更新通知。服务每隔 `REFRESH_INTERVAL` 检查一次：
+
+- 优先发送 `If-None-Match`；没有 ETag 时才发送 `If-Modified-Since`。
+- 本地 DAT 存在且非空、元数据属于同一 URL 时，才使用条件请求和接受 `304`。
+- 上游不提供校验头或忽略条件请求时，会完整下载，再比较 SHA-256；内容相同不重建快照。
+- 内容相同但 ETag / Last-Modified 改变时仍保存新元数据，避免后续反复下载。
+- SHA-256 用于比较已下载内容；如果上游或 CDN 错误返回 `304`，服务无法仅凭响应头识别。
+
+不额外请求 GitHub Release API 或先发送 HEAD：一次条件 GET 已能完成检查和必要的下载，
+也兼容非 GitHub 数据源。Surge 自身的订阅更新周期独立于服务端 DAT 检查周期。
 
 ## 浏览器规则
 
@@ -151,6 +170,18 @@ RULE-SET,https://rules.example.com/geoip/cn,DIRECT,no-resolve
 更换浏览器或更换访问域名后，需要重新填写规则。
 
 ## Surge 使用示例
+
+### 为什么默认使用 RULE-SET
+
+`DOMAIN-SET` 的文件格式更短：`example.com` 表示精确匹配，`.example.com` 表示域名和
+所有子域名。但它只能表达 `DOMAIN` / `DOMAIN-SUFFIX`，无法容纳 Geosite 的关键词、
+通配符转换结果或 GeoIP 的 CIDR，所以不能把整个 Geosite / GeoIP 数据直接替换成
+DOMAIN-SET 而保持现有规则语义。
+
+Surge 从 [Mac 5.4.1](https://kb.nssurge.com/surge-knowledge-base/release-notes/surge-mac-legacy)
+和 [iOS 5.8.1](https://kb.nssurge.com/surge-knowledge-base/release-notes/surge-ios) 起重写了
+集合索引，官方说明 RULE-SET 与 DOMAIN-SET 已没有性能和内存用量差异。
+本项目因此保持统一 RULE-SET 输出；正则仍受下文的转换限制。
 
 假设服务部署在 `https://rules.example.com`：
 
@@ -187,6 +218,8 @@ GET /geosite
 GET /geosite/openai
 GET /geosite/apple@cn
 ```
+
+集合名或属性标签不存在时返回 `404`，避免拼写错误被当成成功的空订阅。
 
 转换关系：
 
@@ -254,6 +287,25 @@ value=google.com&rules=GEOSITE%2Cgoogle%2CProxy
 
 `rules` 只接受 `GEOSITE` 和 `GEOIP`，返回第一条命中规则的策略、规则匹配记录和 Geo
 归属。规则只用于本次请求，不会在服务端保存。
+
+查询结果还包含规则顺序诊断，首条命中的路由策略保持不变：
+
+- 接口的 `trace` 保留所有规则；页面只展示其中命中的规则，避免未命中和类型不适用的
+  规则占用空间。`matched` 表示满足本次查询，`effective` 表示实际生效。
+- 后续满足条件的规则带有 `shadowed_by`，指向首条命中的原始文本行号；注释和空行也计入行号。
+- `policy_conflict` 表示被遮蔽规则的策略与生效策略不同；相同策略的遮蔽也会显示。
+- `diagnostics` 汇总 `matched_rules`、`shadowed_rules`、`conflicting_rules`，并通过
+  `overlapping_sets` 列出共同命中的已配置集合、引用行号和命中依据。相同集合的重复引用
+  合并为一项，带属性过滤的引用单独计入；少于两个不同集合时重叠列表为空，页面不显示
+  空的集合重叠区域。
+
+例如把 `GEOSITE,geolocation-!cn,Proxy` 放在 `GEOSITE,google,DIRECT` 前面，查询
+`google.com` 时，如果当前 DAT 的两个集合都包含它，页面会显示前者生效、后者被遮蔽且
+策略不同，并展示两个集合的命中依据。调整顺序后再次查询即可比较结果。
+
+这是针对**本次域名或 IP**的实际匹配诊断，不是所有集合的全量交集或包含关系分析。
+域名查询不额外解析 DNS，因此不会据此判断 GeoIP 是否命中；正则仍按原始 DAT 语义查询，
+可能与降级后的 Surge 输出不同。编辑规则后页面会清除旧诊断，需重新查询。
 
 ### 查询 Geosite 原始数据（调试接口）
 
@@ -365,6 +417,13 @@ go test ./...
 go vet ./...
 ```
 
+并发检查与真实 DAT 基准测试（不会修改本地数据）：
+
+```bash
+go test -race ./...
+SURGE_GEO_BENCH_DATA="$PWD/data/sources" go test ./internal/rules -run '^$' -bench . -benchmem
+```
+
 ## 配置
 
 所有配置均可通过命令行参数或环境变量指定：
@@ -380,6 +439,7 @@ go vet ./...
 | `-config-file` | `RUNTIME_CONFIG` | `<DATA_DIR>/runtime.json` | 可热载入的持久化运行配置 |
 | `-config-watch` | `CONFIG_WATCH_INTERVAL` | `2s` | 运行配置检查间隔 |
 | `-admin-token` | `ADMIN_TOKEN` | 空 | 保护 `PUT /api/config` 的 Bearer Token；修改后需重启 |
+| `-log-level` | `LOG_LEVEL` | `info` | 日志详细程度：`info` 或 `debug`；修改后需重启 |
 
 默认数据源：
 
@@ -390,7 +450,7 @@ Geosite、GeoIP 和正则模式的启动参数或环境变量只用于创建第�
 该文件存在后会成为这三项运行配置的持久化来源，修改对应环境变量不会覆盖已经热载入
 的配置。`ADMIN_TOKEN` 不写入 `runtime.json`，每次启动都从参数或环境变量读取。
 服务启动时会校验全部配置并检查和下载数据。后续按照更新间隔发送条件请求；
-上游没有变化时不会重复下载，也不会重新加载规则索引。如果上游暂时不可用，但本地
+上游正确支持条件请求且没有变化时不会重复下载，也不会重新加载数据。如果上游暂时不可用，但本地
 已有数据，服务会继续使用缓存启动。
 
 ## 项目设计
@@ -414,9 +474,33 @@ Geosite、GeoIP 和正则模式的启动参数或环境变量只用于创建第�
 或反向代理在缓存有效期内通常不会再次请求后端。缓存是内存缓存，服务重启后会按需重建，
 不会在磁盘生成庞大的规则文件目录。
 
-后台日志使用 Go 结构化日志级别。正常启动、刷新开始、更新成功或无变化显示
-`level=INFO`；下载失败、空内容或 DAT 校验失败显示 `level=ERROR`，并明确说明继续保留
-当前数据。
+缓存同时保存不可变规则文本和预先计算的 ETag，命中时不再复制整份规则或重新计算哈希；
+`304` 保留缓存响应头，并支持弱 ETag、ETag 列表和 HEAD 请求。重复提交相同运行配置、
+或仅调整配置 JSON 的排版，不会重建数据或增加运行版本。
+
+DAT 启动时仍会完整解析和校验，但域名与 IP 的反向查询索引分别在首次查询时建立，
+之后并发复用。仅用于 Surge 规则订阅时无需承担这些索引的内存开销；首次归属查询会
+多一次建索引的耗时。网页查询使用原始 DAT 语义，正则降级后的 Surge 实际命中可能不同。
+
+后台日志输出到 stderr，支持两种详细程度：
+
+- `info`（默认）：显示启动、停止、配置应用和数据更新等关键事件，以及警告和错误。
+  定时检查无变化时不重复打印 INFO。
+- `debug`：包含上述内容，额外显示刷新开始与无变化结果、条件请求状态、上游响应校验头、
+  下载大小与耗时、数据校验、首次查询建索引和规则诊断统计。
+
+本地启用调试日志：
+
+```bash
+go run ./cmd/server -log-level debug
+# 或
+LOG_LEVEL=debug go run ./cmd/server
+```
+
+Docker Compose 在 `.env` 中设置 `LOG_LEVEL=debug`，然后执行
+`docker compose up -d --build`；恢复默认时改回 `LOG_LEVEL=info` 并重建容器。
+命令行参数优先于环境变量，日志级别不写入 `runtime.json`，非法级别会在启动时被拒绝。
+查询调试日志只记录类型、数量、版本和耗时，不记录查询域名/IP、规则全文或管理 Token。
 
 ## 许可证与第三方说明
 
@@ -424,7 +508,4 @@ Geosite、GeoIP 和正则模式的启动参数或环境变量只用于创建第�
 自行遵守所选规则数据源的许可证及使用条款。
 
 ## 后续计划
-
-- 规则顺序诊断：显示被前序规则遮蔽的匹配和集合重叠
-- 浏览器本地命中统计和批量测试，不上传查询历史
 - 通过 GitHub Actions 发布 amd64/arm64 Docker 镜像

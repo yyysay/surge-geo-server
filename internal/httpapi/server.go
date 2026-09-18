@@ -2,12 +2,12 @@ package httpapi
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
-	"embed"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -19,7 +19,7 @@ import (
 )
 
 //go:embed index.html
-var assets embed.FS
+var indexHTML string
 
 type Runtime interface {
 	Snapshot() *runtimecfg.Snapshot
@@ -85,6 +85,8 @@ func New(runtime Runtime, adminToken string) http.Handler {
 		})
 	})
 	mux.HandleFunc("POST /query", func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		w.Header().Set("Cache-Control", "no-store")
 		r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 		if err := r.ParseForm(); err != nil {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid query: %w", err))
@@ -105,6 +107,7 @@ func New(runtime Runtime, adminToken string) http.Handler {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		slog.DebugContext(r.Context(), "rule order diagnosed", "kind", decision.Kind, "rules", len(program.Rules), "matched", decision.Diagnostics.MatchedRules, "shadowed", decision.Diagnostics.ShadowedRules, "conflicting", decision.Diagnostics.ConflictingRules, "overlapping_sets", len(decision.Diagnostics.OverlappingSets), "revision", snapshot.Revision, "duration", time.Since(started))
 		writeJSON(w, http.StatusOK, decision)
 	})
 	mux.HandleFunc("GET /api/geosite/{name}", func(w http.ResponseWriter, r *http.Request) {
@@ -138,12 +141,13 @@ func New(runtime Runtime, adminToken string) http.Handler {
 	})
 	mux.HandleFunc("GET /geosite/{name}", func(w http.ResponseWriter, r *http.Request) {
 		snapshot := runtime.Snapshot()
-		body, report, err := snapshot.Dataset.RenderGeoSite(r.PathValue("name"))
+		body, err := snapshot.Dataset.RenderGeoSite(r.PathValue("name"))
 		if err != nil {
 			writeError(w, http.StatusNotFound, err)
 			return
 		}
 		w.Header().Set("X-Surge-Geo-Regex-Mode", snapshot.Config.RegexMode)
+		report := body.Report
 		w.Header().Set("X-Surge-Geo-Exact-Regex", fmt.Sprintf("%d", report.Exact))
 		w.Header().Set("X-Surge-Geo-Degraded-Regex", fmt.Sprintf("%d", report.Degraded))
 		w.Header().Set("X-Surge-Geo-Skipped-Regex", fmt.Sprintf("%d", report.Skipped))
@@ -207,26 +211,17 @@ func serveIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	body, err := assets.ReadFile("index.html")
-	if err != nil {
-		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(body)
+	_, _ = io.WriteString(w, indexHTML)
 }
 
-func writeRuleSet(w http.ResponseWriter, r *http.Request, body []byte) {
-	hash := sha256.Sum256(body)
-	etag := fmt.Sprintf("\"%x\"", hash[:12])
-	if r.Header.Get("If-None-Match") == etag {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
+func writeRuleSet(w http.ResponseWriter, r *http.Request, set rules.RuleSet) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400")
-	w.Header().Set("ETag", etag)
-	_, _ = w.Write(body)
+	w.Header().Set("ETag", set.ETag)
+	// ServeContent handles weak/list validators, HEAD and byte ranges without
+	// copying or hashing the cached body, and retains cache headers on 304.
+	http.ServeContent(w, r, "", time.Time{}, strings.NewReader(set.Body))
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
